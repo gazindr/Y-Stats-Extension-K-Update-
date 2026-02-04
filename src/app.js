@@ -3,7 +3,7 @@ import { ApiService } from './services/api.service.js'
 import { DomService } from './services/dom.service.js'
 import { VersionService } from './services/version.service.js'
 import { Logger } from './services/logger.service.js'
-import { TIMINGS, API, REVENUE_SERIES_IDS, VERSION, DATA_ATTRIBUTES } from './config/constants.js'
+import { TIMINGS, API, REVENUE_SERIES_IDS, DATA_ATTRIBUTES, DEFAULT_CHART_PERIOD } from './config/constants.js'
 import { formatDate } from './utils/formatters.js'
 import { normalizeRequestDelay } from './utils/validators.js'
 import {
@@ -14,6 +14,7 @@ import {
     prepareGamesTableData,
     sortGamesTableData,
     extractUniqueTimestamps,
+    prepareChartData,
 } from './utils/helpers.js'
 
 export class App {
@@ -145,30 +146,41 @@ export class App {
     setupLoadButton() {
         const button = document.querySelector(`[data-stats="${DATA_ATTRIBUTES.LOAD_BUTTON}"]`)
         if (button) {
-            button.addEventListener('click', () => {
-                this.loadData()
-            })
+            button.addEventListener('click', () => this.loadData())
         }
     }
 
-    setupPeriodButtons() {
-        const container = document.querySelector('.stats-period-selector')
+    _setupEventHandlers(options = {}) {
+        this.setupPeriodButtons()
+        this.setupTabSwitcher()
+        if (options.withDateSelector !== false) {
+            this.setupDateSelector()
+        }
+        if (options.withTableSorting) {
+            this.setupTableSorting()
+        }
+    }
+
+    _setupDelegatedHandler(selector, handlerKey, handler) {
+        const container = document.querySelector(selector)
         if (!container) return
 
-        if (this._periodClickHandler) {
-            container.removeEventListener('click', this._periodClickHandler)
+        if (this[handlerKey]) {
+            container.removeEventListener('click', this[handlerKey])
         }
 
-        this._periodClickHandler = (e) => {
+        this[handlerKey] = handler
+        container.addEventListener('click', handler)
+    }
+
+    setupPeriodButtons() {
+        this._setupDelegatedHandler('.stats-period-selector', '_periodClickHandler', (e) => {
             const button = e.target.closest('[data-period]')
             if (button) {
-                const period = button.dataset.period
-                this.selectedPeriod = period
-                this.updateDataForPeriod(period)
+                this.selectedPeriod = button.dataset.period
+                this.updateDataForPeriod(this.selectedPeriod)
             }
-        }
-
-        container.addEventListener('click', this._periodClickHandler)
+        })
     }
 
     resetDateSelectorValue() {
@@ -181,22 +193,27 @@ export class App {
 
     setupDateSelector() {
         const selector = document.querySelector('[data-date-selector]')
-        if (selector) {
-            selector.addEventListener('change', (e) => {
-                const selectedValue = e.target.value
+        if (!selector) return
 
-                if (selectedValue === '') {
-                    this.dateSelectionMode = 'period'
-                    this.selectedDate = null
-                    this.updateDataForPeriod(this.selectedPeriod)
-                } else {
-                    const timestamp = parseInt(selectedValue, 10)
-                    this.dateSelectionMode = 'specific-date'
-                    this.selectedDate = timestamp
-                    this.updateDataForSpecificDate(timestamp)
-                }
-            })
+        if (this._dateChangeHandler) {
+            selector.removeEventListener('change', this._dateChangeHandler)
         }
+
+        this._dateChangeHandler = (e) => {
+            const selectedValue = e.target.value
+
+            if (selectedValue === '') {
+                this.dateSelectionMode = 'period'
+                this.selectedDate = null
+                this.updateDataForPeriod(this.selectedPeriod)
+            } else {
+                this.dateSelectionMode = 'specific-date'
+                this.selectedDate = parseInt(selectedValue, 10)
+                this.updateDataForSpecificDate(this.selectedDate)
+            }
+        }
+
+        selector.addEventListener('change', this._dateChangeHandler)
     }
 
     updateDataForPeriod(period) {
@@ -208,12 +225,12 @@ export class App {
 
         if (this.activeTab === 'games-table') {
             this.updateGamesTableForPeriod(period)
+        } else if (this.activeTab === 'chart') {
+            this.updateChartForPeriod(period)
         } else {
             const aggregatedData = this.aggregateDataForPeriod(this.rawData, period)
             this.view.showResults(aggregatedData, period, this.availableDates, this.selectedDate)
-            this.setupPeriodButtons()
-            this.setupTabSwitcher()
-            this.setupDateSelector()
+            this._setupEventHandlers()
         }
 
         this.updateDateDisplay(period)
@@ -241,10 +258,10 @@ export class App {
                 this.selectedDate,
             )
 
-            this.setupTableSorting()
-            this.setupPeriodButtons()
-            this.setupTabSwitcher()
-            this.setupDateSelector()
+            this._setupEventHandlers({ withTableSorting: true })
+        } else if (this.activeTab === 'chart') {
+            // Для графика игнорируем выбор конкретной даты, показываем по периоду
+            this.updateChartForPeriod(DEFAULT_CHART_PERIOD)
         } else {
             const aggregated = aggregateRevenueData(this.rawData.allGamesData, timestamp)
 
@@ -258,10 +275,7 @@ export class App {
             }
 
             this.view.showResults(dateData, 'day', this.availableDates, this.selectedDate)
-
-            this.setupPeriodButtons()
-            this.setupTabSwitcher()
-            this.setupDateSelector()
+            this._setupEventHandlers()
         }
 
         const dateElement = this.view.element.querySelector(`[data-stats="${DATA_ATTRIBUTES.DATE}"]`)
@@ -516,6 +530,8 @@ export class App {
                 this.updateDataForSpecificDate(this.selectedDate)
             } else if (this.activeTab === 'games-table') {
                 this.updateGamesTableForPeriod(this.selectedPeriod)
+            } else if (this.activeTab === 'chart') {
+                this.updateChartForPeriod(DEFAULT_CHART_PERIOD)
             } else {
                 this.view.showResults(
                     lastDayData,
@@ -524,10 +540,7 @@ export class App {
                     this.selectedDate,
                 )
                 this.updateDateDisplay(this.selectedPeriod)
-                this.setupPeriodButtons()
-                this.setupTabSwitcher()
-                this.setupTableSorting()
-                this.setupDateSelector()
+                this._setupEventHandlers({ withTableSorting: true })
             }
         } catch (error) {
             Logger.error('Data load failed:', error)
@@ -544,22 +557,12 @@ export class App {
     }
 
     setupTabSwitcher() {
-        const container = document.querySelector('.stats-tab-switcher')
-        if (!container) return
-
-        if (this._tabClickHandler) {
-            container.removeEventListener('click', this._tabClickHandler)
-        }
-
-        this._tabClickHandler = (e) => {
+        this._setupDelegatedHandler('.stats-tab-switcher', '_tabClickHandler', (e) => {
             const tab = e.target.closest('[data-tab]')
             if (tab) {
-                const tabKey = tab.dataset.tab
-                this.switchTab(tabKey)
+                this.switchTab(tab.dataset.tab)
             }
-        }
-
-        container.addEventListener('click', this._tabClickHandler)
+        })
     }
 
     switchTab(tabKey) {
@@ -581,6 +584,10 @@ export class App {
         } else {
             if (tabKey === 'games-table') {
                 this.updateGamesTableForPeriod(this.selectedPeriod)
+            } else if (tabKey === 'chart') {
+                // Для графика не вызываем setupDateSelector(), т.к. выбор конкретной даты
+                // не применим к графику — он всегда показывает период
+                this.updateChartForPeriod(DEFAULT_CHART_PERIOD)
             } else {
                 const aggregatedData = this.aggregateDataForPeriod(
                     this.rawData,
@@ -592,9 +599,7 @@ export class App {
                     this.availableDates,
                     this.selectedDate,
                 )
-                this.setupPeriodButtons()
-                this.setupTabSwitcher()
-                this.setupDateSelector()
+                this._setupEventHandlers()
             }
 
             this.updateDateDisplay(this.selectedPeriod)
@@ -627,10 +632,26 @@ export class App {
             this.selectedDate,
         )
 
-        this.setupTableSorting()
-        this.setupPeriodButtons()
-        this.setupTabSwitcher()
-        this.setupDateSelector()
+        this._setupEventHandlers({ withTableSorting: true })
+    }
+
+    updateChartForPeriod(period) {
+        if (!this.rawData) return
+
+        const range = this.getPeriodRange(this.rawData, period)
+        if (!range) return
+
+        const { start: periodStart, end: periodEnd } = range
+
+        const chartData = prepareChartData(
+            this.rawData.allGamesData,
+            periodStart,
+            periodEnd,
+        )
+
+        this.view.showChart(chartData, period)
+
+        this._setupEventHandlers({ withDateSelector: false })
     }
 
     setupTableSorting() {

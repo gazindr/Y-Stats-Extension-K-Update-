@@ -1,8 +1,79 @@
 import { PATHS, REVENUE_SERIES_IDS } from '../config/constants.js'
+import { formatShortDate } from './formatters.js'
+
+// ==================== Page helpers ====================
 
 export function isApplicationsPage(path = window.location.pathname) {
     return path === PATHS.APPLICATIONS || path === PATHS.APPLICATIONS_WITH_SLASH
 }
+
+// ==================== Data iteration helpers ====================
+
+/**
+ * Iterates over all data points in chartkit data array
+ * @param {Array} chartkitDataArray - Array of chartkit data objects
+ * @param {Function} callback - Called for each point: (point, serie, chartkitData) => void
+ * @param {Function} [filter] - Optional filter: (point) => boolean
+ */
+function forEachDataPoint(chartkitDataArray, callback, filter = null) {
+    for (const chartkitData of chartkitDataArray) {
+        const series = chartkitData?.options?.series
+        if (!series) continue
+
+        for (const serie of series) {
+            if (!serie.data?.length) continue
+
+            for (const point of serie.data) {
+                if (!point?.x) continue
+                if (filter && !filter(point)) continue
+                callback(point, serie, chartkitData)
+            }
+        }
+    }
+}
+
+/**
+ * Collects unique timestamps from chartkit data
+ * @param {Array} chartkitDataArray
+ * @param {Function} [filter] - Optional filter for points
+ * @returns {Set<number>}
+ */
+function collectTimestamps(chartkitDataArray, filter = null) {
+    const timestamps = new Set()
+    forEachDataPoint(chartkitDataArray, (point) => {
+        timestamps.add(point.x)
+    }, filter)
+    return timestamps
+}
+
+// ==================== Timestamp functions ====================
+
+export function findLatestTimestamp(chartkitDataArray) {
+    let result = null
+    forEachDataPoint(chartkitDataArray, (point) => {
+        if (result === null || point.x > result) {
+            result = point.x
+        }
+    })
+    return result
+}
+
+export function findEarliestTimestamp(chartkitDataArray) {
+    let result = null
+    forEachDataPoint(chartkitDataArray, (point) => {
+        if (result === null || point.x < result) {
+            result = point.x
+        }
+    })
+    return result
+}
+
+export function extractUniqueTimestamps(chartkitDataArray) {
+    const timestamps = collectTimestamps(chartkitDataArray)
+    return Array.from(timestamps).sort((a, b) => b - a)
+}
+
+// ==================== Revenue extraction ====================
 
 export function extractRevenueFromSeries(series, revenueIds, timestamp = null) {
     let total = 0
@@ -11,110 +82,46 @@ export function extractRevenueFromSeries(series, revenueIds, timestamp = null) {
     }
 
     for (const serie of series) {
-        if (!serie.data || serie.data.length === 0) {
-            continue
-        }
+        if (!serie.data?.length) continue
 
         const serieId = serie.id || ''
-        if (!revenueIds.includes(serieId)) {
-            continue
-        }
+        if (!revenueIds.includes(serieId)) continue
 
         const dataPoint = timestamp
             ? serie.data.find((point) => point.x === timestamp)
             : serie.data[serie.data.length - 1]
 
-        const value = dataPoint?.y
-        if (typeof value === 'number') {
-            total += value
+        if (typeof dataPoint?.y === 'number') {
+            total += dataPoint.y
         }
     }
 
     return total
 }
 
-export function findLatestTimestamp(chartkitDataArray) {
-    let maxTimestamp = null
-
-    for (const chartkitData of chartkitDataArray) {
-        if (!chartkitData.options || !chartkitData.options.series) {
-            continue
-        }
-
-        for (const serie of chartkitData.options.series) {
-            if (!serie.data || serie.data.length === 0) {
-                continue
-            }
-
-            for (const point of serie.data) {
-                if (point && point.x) {
-                    if (!maxTimestamp || point.x > maxTimestamp) {
-                        maxTimestamp = point.x
-                    }
-                }
-            }
-        }
-    }
-
-    return maxTimestamp
-}
-
-export function findEarliestTimestamp(chartkitDataArray) {
-    let minTimestamp = null
-
-    for (const chartkitData of chartkitDataArray) {
-        if (!chartkitData.options || !chartkitData.options.series) {
-            continue
-        }
-
-        for (const serie of chartkitData.options.series) {
-            if (!serie.data || serie.data.length === 0) {
-                continue
-            }
-
-            for (const point of serie.data) {
-                if (point && point.x) {
-                    if (minTimestamp === null || point.x < minTimestamp) {
-                        minTimestamp = point.x
-                    }
-                }
-            }
-        }
-    }
-
-    return minTimestamp
-}
-
 export function aggregateRevenueData(chartkitDataArray, timestamp = null) {
-    let yandexAdsTotal = 0
-    let externalAdsTotal = 0
-    let inAppTotal = 0
+    let yandexAds = 0
+    let externalAds = 0
+    let inApp = 0
 
     for (const chartkitData of chartkitDataArray) {
-        if (!chartkitData.options || !chartkitData.options.series) {
-            continue
-        }
+        const series = chartkitData?.options?.series
+        if (!series) continue
 
-        const series = chartkitData.options.series
-
-        yandexAdsTotal += extractRevenueFromSeries(series, REVENUE_SERIES_IDS.YANDEX_ADS, timestamp)
-        externalAdsTotal += extractRevenueFromSeries(
-            series,
-            REVENUE_SERIES_IDS.EXTERNAL_ADS,
-            timestamp,
-        )
-        inAppTotal += extractRevenueFromSeries(series, REVENUE_SERIES_IDS.IN_APP, timestamp)
+        yandexAds += extractRevenueFromSeries(series, REVENUE_SERIES_IDS.YANDEX_ADS, timestamp)
+        externalAds += extractRevenueFromSeries(series, REVENUE_SERIES_IDS.EXTERNAL_ADS, timestamp)
+        inApp += extractRevenueFromSeries(series, REVENUE_SERIES_IDS.IN_APP, timestamp)
     }
-
-    const totalAmount = yandexAdsTotal + externalAdsTotal + inAppTotal
 
     return {
-        yandexAds: yandexAdsTotal,
-        externalAds: externalAdsTotal,
-        inApp: inAppTotal,
-        total: totalAmount,
+        yandexAds,
+        externalAds,
+        inApp,
+        total: yandexAds + externalAds + inApp,
     }
 }
+
+// ==================== Data preparation ====================
 
 export function prepareGamesTableData(allGamesData, gamesInfo, periodStart, periodEnd, period = null) {
     return allGamesData.map((gameData, index) => {
@@ -124,70 +131,76 @@ export function prepareGamesTableData(allGamesData, gamesInfo, periodStart, peri
             url: '#',
         }
 
-        if (!gameData.options || !gameData.options.series) {
-            return {
-                id: gameInfo.id,
-                name: gameInfo.name,
-                url: gameInfo.url,
-                totalRevenue: 0,
-                yandexAds: 0,
-                externalAds: 0,
-                inApp: 0,
-            }
+        const series = gameData?.options?.series
+        if (!series) {
+            return createEmptyGameData(gameInfo)
         }
 
-        const series = gameData.options.series
-        let yandexAds = 0
-        let externalAds = 0
-        let inApp = 0
-
-        if (period === 'day') {
-            yandexAds = extractRevenueFromSeries(series, REVENUE_SERIES_IDS.YANDEX_ADS, periodEnd)
-            externalAds = extractRevenueFromSeries(
-                series,
-                REVENUE_SERIES_IDS.EXTERNAL_ADS,
-                periodEnd,
-            )
-            inApp = extractRevenueFromSeries(series, REVENUE_SERIES_IDS.IN_APP, periodEnd)
-        } else {
-            series.forEach((serie) => {
-                if (!serie.data || serie.data.length === 0) return
-
-                const serieId = serie.id || ''
-
-                const pointsInPeriod = serie.data
-                    .filter(
-                        (point) =>
-                            point.x >= periodStart &&
-                            point.x <= periodEnd &&
-                            typeof point.y === 'number',
-                    )
-                    .sort((a, b) => a.x - b.x)
-
-                if (pointsInPeriod.length === 0) return
-
-                const value = pointsInPeriod.reduce((sum, point) => sum + (point.y || 0), 0)
-
-                if (REVENUE_SERIES_IDS.YANDEX_ADS.includes(serieId)) {
-                    yandexAds += value
-                } else if (REVENUE_SERIES_IDS.EXTERNAL_ADS.includes(serieId)) {
-                    externalAds += value
-                } else if (REVENUE_SERIES_IDS.IN_APP.includes(serieId)) {
-                    inApp += value
-                }
-            })
-        }
+        const revenue = period === 'day'
+            ? extractDayRevenue(series, periodEnd)
+            : extractPeriodRevenue(series, periodStart, periodEnd)
 
         return {
             id: gameInfo.id,
             name: gameInfo.name,
             url: gameInfo.url,
-            totalRevenue: yandexAds + externalAds + inApp,
-            yandexAds,
-            externalAds,
-            inApp,
+            totalRevenue: revenue.yandexAds + revenue.externalAds + revenue.inApp,
+            ...revenue,
         }
     })
+}
+
+function createEmptyGameData(gameInfo) {
+    return {
+        id: gameInfo.id,
+        name: gameInfo.name,
+        url: gameInfo.url,
+        totalRevenue: 0,
+        yandexAds: 0,
+        externalAds: 0,
+        inApp: 0,
+    }
+}
+
+function extractDayRevenue(series, timestamp) {
+    return {
+        yandexAds: extractRevenueFromSeries(series, REVENUE_SERIES_IDS.YANDEX_ADS, timestamp),
+        externalAds: extractRevenueFromSeries(series, REVENUE_SERIES_IDS.EXTERNAL_ADS, timestamp),
+        inApp: extractRevenueFromSeries(series, REVENUE_SERIES_IDS.IN_APP, timestamp),
+    }
+}
+
+function extractPeriodRevenue(series, periodStart, periodEnd) {
+    let yandexAds = 0
+    let externalAds = 0
+    let inApp = 0
+
+    for (const serie of series) {
+        if (!serie.data?.length) continue
+
+        const serieId = serie.id || ''
+        const value = sumPointsInPeriod(serie.data, periodStart, periodEnd)
+
+        if (REVENUE_SERIES_IDS.YANDEX_ADS.includes(serieId)) {
+            yandexAds += value
+        } else if (REVENUE_SERIES_IDS.EXTERNAL_ADS.includes(serieId)) {
+            externalAds += value
+        } else if (REVENUE_SERIES_IDS.IN_APP.includes(serieId)) {
+            inApp += value
+        }
+    }
+
+    return { yandexAds, externalAds, inApp }
+}
+
+function sumPointsInPeriod(data, periodStart, periodEnd) {
+    return data
+        .filter((point) =>
+            point.x >= periodStart &&
+            point.x <= periodEnd &&
+            typeof point.y === 'number'
+        )
+        .reduce((sum, point) => sum + point.y, 0)
 }
 
 export function sortGamesTableData(tableData, sortBy, sortOrder = 'desc') {
@@ -205,26 +218,24 @@ export function sortGamesTableData(tableData, sortBy, sortOrder = 'desc') {
     })
 }
 
-export function extractUniqueTimestamps(chartkitDataArray) {
-    const timestampsSet = new Set()
+// ==================== Chart data ====================
 
-    for (const chartkitData of chartkitDataArray) {
-        if (!chartkitData.options || !chartkitData.options.series) {
-            continue
+export function prepareChartData(allGamesData, periodStart, periodEnd) {
+    const filter = (point) => point.x >= periodStart && point.x <= periodEnd
+    const timestampsSet = collectTimestamps(allGamesData, filter)
+    const timestamps = Array.from(timestampsSet).sort((a, b) => a - b)
+
+    const points = timestamps.map((timestamp) => {
+        const aggregated = aggregateRevenueData(allGamesData, timestamp)
+        return {
+            timestamp,
+            dateLabel: formatShortDate(new Date(timestamp)),
+            yandexAds: aggregated.yandexAds,
+            externalAds: aggregated.externalAds,
+            inApp: aggregated.inApp,
+            total: aggregated.total,
         }
+    })
 
-        for (const serie of chartkitData.options.series) {
-            if (!serie.data || serie.data.length === 0) {
-                continue
-            }
-
-            for (const point of serie.data) {
-                if (point && point.x) {
-                    timestampsSet.add(point.x)
-                }
-            }
-        }
-    }
-
-    return Array.from(timestampsSet).sort((a, b) => b - a)
+    return { points }
 }

@@ -740,3 +740,97 @@
     background: #2d2d2d;
     color: white;
 }
+
+/* Chart styles - Glassmorphism */
+.stats-chart-container {
+    position: relative;
+    background: rgba(15, 23, 42, 0.6);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 16px;
+    box-shadow:
+        0 4px 24px rgba(0, 0, 0, 0.2),
+        inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    overflow: hidden;
+}
+
+.stats-chart-container::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(255, 255, 255, 0.2),
+        transparent
+    );
+}
+
+.stats-chart-wrapper {
+    position: relative;
+    width: 100%;
+    height: 350px;
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.2);
+    box-sizing: border-box;
+    animation: chartFadeIn 0.4s ease-out;
+}
+
+#stats-chart-canvas {
+    width: 100% !important;
+    height: 100% !important;
+    border-radius: 8px;
+}
+
+.stats-chart-no-data {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 200px;
+    padding: 60px 20px;
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: 0.3px;
+    background: rgba(0, 0, 0, 0.1);
+    border-radius: 12px;
+    border: 1px dashed rgba(255, 255, 255, 0.15);
+}
+
+/* Chart animation */
+@keyframes chartFadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .stats-chart-wrapper {
+        animation: none;
+    }
+}
+
+@media (max-width: 768px) {
+    .stats-chart-container {
+        border-radius: 12px;
+    }
+
+    .stats-chart-wrapper {
+        height: 300px;
+    }
+}
+
+@media (max-width: 500px) {
+    .stats-chart-wrapper {
+        height: 260px;
+    }
+}
