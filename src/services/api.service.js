@@ -89,7 +89,7 @@ export class ApiService {
         }
     }
 
-    static async fetchChartkitData(secretkey, gameId) {
+    static async fetchChartkitData(secretkey, gameId, slug = CHART.SLUG) {
         try {
             const url = `${API.BASE_URL}${API.ENDPOINTS.CHARTKIT}`
             const response = await fetchWithTimeout(url, {
@@ -102,7 +102,7 @@ export class ApiService {
                     'x-csrf-token': secretkey,
                 },
                 body: JSON.stringify({
-                    slug: CHART.SLUG,
+                    slug: slug,
                     game_id: gameId,
                     lang: CHART.LANG,
                     mobile_slice: CHART.MOBILE_SLICE,

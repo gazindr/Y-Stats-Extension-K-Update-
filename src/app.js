@@ -3,7 +3,7 @@ import { ApiService } from './services/api.service.js'
 import { DomService } from './services/dom.service.js'
 import { VersionService } from './services/version.service.js'
 import { Logger } from './services/logger.service.js'
-import { TIMINGS, API, REVENUE_SERIES_IDS, DATA_ATTRIBUTES, DEFAULT_CHART_PERIOD } from './config/constants.js'
+import { TIMINGS, API, REVENUE_SERIES_IDS, DATA_ATTRIBUTES, DEFAULT_CHART_PERIOD, CHART } from './config/constants.js'
 import { formatDate } from './utils/formatters.js'
 import { normalizeRequestDelay } from './utils/validators.js'
 import {
@@ -11,6 +11,7 @@ import {
     findLatestTimestamp,
     findEarliestTimestamp,
     aggregateRevenueData,
+    aggregatePlayersData,
     prepareGamesTableData,
     sortGamesTableData,
     extractUniqueTimestamps,
@@ -247,6 +248,7 @@ export class App {
                 timestamp,
                 timestamp,
                 'day',
+                this.rawData.allPlayersData,
             )
 
             const sortedData = sortGamesTableData(tableData, this.sortBy, this.sortOrder)
@@ -264,6 +266,7 @@ export class App {
             this.updateChartForPeriod(DEFAULT_CHART_PERIOD)
         } else {
             const aggregated = aggregateRevenueData(this.rawData.allGamesData, timestamp)
+            const players = aggregatePlayersData(this.rawData.allPlayersData, timestamp)
 
             const dateData = {
                 date: new Date(timestamp),
@@ -272,6 +275,7 @@ export class App {
                 externalAds: aggregated.externalAds,
                 inApp: aggregated.inApp,
                 gamesCount: this.rawData.gamesInfo.length,
+                players: players,
             }
 
             this.view.showResults(dateData, 'day', this.availableDates, this.selectedDate)
@@ -376,8 +380,9 @@ export class App {
         let yandexAdsTotal = 0
         let externalAdsTotal = 0
         let inAppTotal = 0
+        let playersTotal = 0
 
-        const { allGamesData, gamesInfo } = rawData
+        const { allGamesData, allPlayersData, gamesInfo } = rawData
 
         allGamesData.forEach((gameData) => {
             const series = gameData.options?.series
@@ -411,6 +416,33 @@ export class App {
             })
         })
 
+        if (allPlayersData) {
+            allPlayersData.forEach((playerData) => {
+                const series = playerData?.options?.series
+                if (!series) return
+
+                series.forEach((serie) => {
+                    if (!serie.data?.length) return
+
+                    const serieId = serie.id || ''
+                    if (serieId !== CHART.PLAYERS_SERIES_ID) return
+
+                    const pointsInPeriod = serie.data
+                        .filter(
+                            (point) =>
+                                point.x >= periodStart &&
+                                point.x <= periodEnd &&
+                                typeof point.y === 'number',
+                        )
+
+                    if (pointsInPeriod.length === 0) return
+
+                    const value = pointsInPeriod.reduce((sum, point) => sum + (point.y || 0), 0)
+                    playersTotal += value
+                })
+            })
+        }
+
         const totalAmount = yandexAdsTotal + externalAdsTotal + inAppTotal
 
         return {
@@ -420,6 +452,7 @@ export class App {
             externalAds: externalAdsTotal,
             inApp: inAppTotal,
             gamesCount: gamesInfo.length,
+            players: playersTotal,
         }
     }
 
@@ -474,16 +507,22 @@ export class App {
             }
 
             const allGamesData = []
+            const allPlayersData = []
 
             for (let i = 0; i < gamesInfo.length; i++) {
                 const gameId = gamesInfo[i].id
 
                 try {
-                    const chartkitData = await ApiService.fetchChartkitData(this.csrfToken, gameId)
+                    const [chartkitData, playersData] = await Promise.all([
+                        ApiService.fetchChartkitData(this.csrfToken, gameId, CHART.SLUG),
+                        ApiService.fetchChartkitData(this.csrfToken, gameId, CHART.PLAYERS_SLUG),
+                    ])
                     allGamesData.push(chartkitData)
+                    allPlayersData.push(playersData)
                 } catch (error) {
                     Logger.error(`Failed to load data for game ${gameId}:`, error)
                     allGamesData.push({})
+                    allPlayersData.push({})
                 }
 
                 this.view.showLoadingProgress(i + 1, gamesInfo.length)
@@ -496,6 +535,7 @@ export class App {
             const lastTimestamp = findLatestTimestamp(allGamesData)
 
             const aggregated = aggregateRevenueData(allGamesData, lastTimestamp)
+            const totalPlayers = aggregatePlayersData(allPlayersData, lastTimestamp)
 
             const lastDate = lastTimestamp ? new Date(lastTimestamp) : today
 
@@ -506,10 +546,12 @@ export class App {
                 externalAds: aggregated.externalAds,
                 inApp: aggregated.inApp,
                 gamesCount: gamesInfo.length,
+                players: totalPlayers,
             }
 
             this.rawData = {
                 allGamesData: allGamesData,
+                allPlayersData: allPlayersData,
                 gamesInfo: gamesInfo,
                 lastDay: lastDayData,
                 lastTimestamp: lastTimestamp,
@@ -620,6 +662,7 @@ export class App {
             periodStart,
             periodEnd,
             period,
+            this.rawData.allPlayersData,
         )
 
         const sortedData = sortGamesTableData(tableData, this.sortBy, this.sortOrder)

@@ -101,6 +101,10 @@ export class StatsView {
             { label: 'In-app', value: formatMoney(data.inApp || 0), size: 'medium' },
         ]))
 
+        content.appendChild(this._createStatsRow('stats-row--players', [
+            { label: 'Игроков', value: (data.players || 0).toLocaleString('ru-RU'), size: 'medium' },
+        ]))
+
         content.appendChild(this._createStatsRow('stats-row--footer', [
             {
                 label: 'Количество игр',
@@ -390,6 +394,8 @@ export class StatsView {
             { sort: 'yandexAds', label: 'РСЯ' },
             { sort: 'externalAds', label: 'Внешние сети' },
             { sort: 'inApp', label: 'In-app' },
+            { sort: 'players', label: 'Игроки' },
+            { sort: 'revenuePerPlayer', label: '₽/игрок' },
         ]
 
         headers.forEach(({ sort, label }) => {
@@ -420,6 +426,8 @@ export class StatsView {
             { className: 'revenue-cell', label: 'РСЯ', value: formatMoney(game.yandexAds) },
             { className: 'revenue-cell', label: 'Внешние сети', value: formatMoney(game.externalAds) },
             { className: 'revenue-cell', label: 'In-app', value: formatMoney(game.inApp) },
+            { className: 'players-cell', label: 'Игроки', value: (game.players || 0).toLocaleString('ru-RU') },
+            { className: 'revenue-cell', label: '₽/игрок', value: formatMoney(game.revenuePerPlayer || 0) },
         ]
 
         cells.forEach(({ className, label, value }) => {

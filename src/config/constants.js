@@ -45,6 +45,8 @@ export const API = {
 
 export const CHART = {
     SLUG: 'purchase_amount',
+    PLAYERS_SLUG: 'players',
+    PLAYERS_SERIES_ID: 'Всего',
     LANG: 'ru',
     MOBILE_SLICE: '__total__',
     COUNTRY_SLICE: '__total__',

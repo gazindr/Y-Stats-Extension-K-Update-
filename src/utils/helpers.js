@@ -1,5 +1,5 @@
-import { PATHS, REVENUE_SERIES_IDS } from '../config/constants.js'
-import { formatShortDate } from './formatters.js'
+import { PATHS, REVENUE_SERIES_IDS, CHART } from '../config/constants.js'
+import { formatShortDate, calculateRevenuePerPlayer } from './formatters.js'
 
 // ==================== Page helpers ====================
 
@@ -73,6 +73,44 @@ export function extractUniqueTimestamps(chartkitDataArray) {
     return Array.from(timestamps).sort((a, b) => b - a)
 }
 
+// ==================== Players extraction ====================
+
+export function extractPlayersFromSeries(series, timestamp = null) {
+    if (!series || !Array.isArray(series)) {
+        return 0
+    }
+
+    for (const serie of series) {
+        if (!serie.data?.length) continue
+
+        const serieId = serie.id || ''
+        if (serieId !== CHART.PLAYERS_SERIES_ID) continue
+
+        const dataPoint = timestamp
+            ? serie.data.find((point) => point.x === timestamp)
+            : serie.data[serie.data.length - 1]
+
+        if (typeof dataPoint?.y === 'number') {
+            return dataPoint.y
+        }
+    }
+
+    return 0
+}
+
+export function aggregatePlayersData(chartkitDataArray, timestamp = null) {
+    let total = 0
+
+    for (const chartkitData of chartkitDataArray) {
+        const series = chartkitData?.options?.series
+        if (!series) continue
+
+        total += extractPlayersFromSeries(series, timestamp)
+    }
+
+    return total
+}
+
 // ==================== Revenue extraction ====================
 
 export function extractRevenueFromSeries(series, revenueIds, timestamp = null) {
@@ -123,7 +161,7 @@ export function aggregateRevenueData(chartkitDataArray, timestamp = null) {
 
 // ==================== Data preparation ====================
 
-export function prepareGamesTableData(allGamesData, gamesInfo, periodStart, periodEnd, period = null) {
+export function prepareGamesTableData(allGamesData, gamesInfo, periodStart, periodEnd, period = null, allPlayersData = null) {
     return allGamesData.map((gameData, index) => {
         const gameInfo = gamesInfo[index] || {
             id: 'unknown',
@@ -140,11 +178,27 @@ export function prepareGamesTableData(allGamesData, gamesInfo, periodStart, peri
             ? extractDayRevenue(series, periodEnd)
             : extractPeriodRevenue(series, periodStart, periodEnd)
 
+        const totalRevenue = revenue.yandexAds + revenue.externalAds + revenue.inApp
+
+        let players = 0
+        if (allPlayersData && allPlayersData[index]) {
+            const playersSeries = allPlayersData[index]?.options?.series
+            if (playersSeries) {
+                players = period === 'day'
+                    ? extractPlayersFromSeries(playersSeries, periodEnd)
+                    : extractPeriodPlayers(playersSeries, periodStart, periodEnd)
+            }
+        }
+
+        const revenuePerPlayer = calculateRevenuePerPlayer(totalRevenue, players)
+
         return {
             id: gameInfo.id,
             name: gameInfo.name,
             url: gameInfo.url,
-            totalRevenue: revenue.yandexAds + revenue.externalAds + revenue.inApp,
+            totalRevenue,
+            players,
+            revenuePerPlayer,
             ...revenue,
         }
     })
@@ -159,6 +213,8 @@ function createEmptyGameData(gameInfo) {
         yandexAds: 0,
         externalAds: 0,
         inApp: 0,
+        players: 0,
+        revenuePerPlayer: 0,
     }
 }
 
@@ -201,6 +257,23 @@ function sumPointsInPeriod(data, periodStart, periodEnd) {
             typeof point.y === 'number'
         )
         .reduce((sum, point) => sum + point.y, 0)
+}
+
+function extractPeriodPlayers(series, periodStart, periodEnd) {
+    if (!series || !Array.isArray(series)) {
+        return 0
+    }
+
+    for (const serie of series) {
+        if (!serie.data?.length) continue
+
+        const serieId = serie.id || ''
+        if (serieId !== CHART.PLAYERS_SERIES_ID) continue
+
+        return sumPointsInPeriod(serie.data, periodStart, periodEnd)
+    }
+
+    return 0
 }
 
 export function sortGamesTableData(tableData, sortBy, sortOrder = 'desc') {
