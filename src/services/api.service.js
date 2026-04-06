@@ -25,6 +25,48 @@ function fetchWithTimeout(url, options = {}, timeout = FETCH_TIMEOUT) {
     }).finally(() => clearTimeout(timeoutId))
 }
 
+function pickFirstString(...values) {
+    return values.find((value) => typeof value === 'string' && value.trim()) || null
+}
+
+function getCurrentRelationContext() {
+    try {
+        const params = new URLSearchParams(window.location.search)
+        return params.get('relation_context')
+    } catch {
+        return null
+    }
+}
+
+function extractAccountInfo(game) {
+    const fallbackAccountId = getCurrentRelationContext() || 'current'
+
+    const accountId = String(
+        game?.relation_context ??
+            game?.relationContext ??
+            game?.['relation-context'] ??
+            game?.account?.id ??
+            game?.developer?.id ??
+            game?.publisher?.id ??
+            game?.owner?.id ??
+            fallbackAccountId,
+    )
+
+    const accountName =
+        pickFirstString(
+            game?.account?.name,
+            game?.account?.title,
+            game?.developer?.name,
+            game?.developer?.title,
+            game?.publisher?.name,
+            game?.publisher?.title,
+            game?.owner?.name,
+            game?.owner?.title,
+        ) || `Аккаунт ${accountId}`
+
+    return { accountId, accountName }
+}
+
 export class ApiService {
     static async fetchGamesList() {
         try {
@@ -61,35 +103,34 @@ export class ApiService {
                 return []
             }
 
-            const gamesInfo = games
+            return games
                 .map((game) => {
-                    let name = `Игра ${game.rtx_id}`
-                    if (game['published-version']?.title) {
-                        name = game['published-version'].title.ru || game['published-version'].title.en || name
-                    }
-
-                    const gameUrl = `https://games.yandex.ru/console/application/${game.rtx_id}#metrics`
+                    const defaultName = `Игра ${game?.rtx_id || 'unknown'}`
+                    const localizedTitle = game?.['published-version']?.title || {}
+                    const name = localizedTitle.ru || localizedTitle.en || defaultName
+                    const { accountId, accountName } = extractAccountInfo(game)
 
                     return {
-                        id: game.rtx_id,
-                        name: name,
-                        url: gameUrl,
+                        id: String(game?.rtx_id || ''),
+                        name,
+                        url: `${API.BASE_URL}/console/application/${game?.rtx_id}#metrics`,
+                        accountId,
+                        accountName,
                     }
                 })
                 .filter((game) => game.id)
-
-            return gamesInfo
         } catch (error) {
             if (error.name === 'AbortError') {
                 Logger.error(ERROR_MESSAGES.GAMES_LIST_TIMEOUT)
                 throw new Error(ERROR_MESSAGES.TIMEOUT)
             }
+
             Logger.error(ERROR_MESSAGES.FETCH_FAILED, error)
             return []
         }
     }
 
-    static async fetchChartkitData(secretkey, gameId, slug = CHART.SLUG) {
+    static async fetchChartkitData(secretkey, gameId, slug) {
         try {
             const url = `${API.BASE_URL}${API.ENDPOINTS.CHARTKIT}`
             const response = await fetchWithTimeout(url, {
@@ -102,7 +143,7 @@ export class ApiService {
                     'x-csrf-token': secretkey,
                 },
                 body: JSON.stringify({
-                    slug: slug,
+                    slug,
                     game_id: gameId,
                     lang: CHART.LANG,
                     mobile_slice: CHART.MOBILE_SLICE,
@@ -117,13 +158,50 @@ export class ApiService {
                 throw new Error(`${ERROR_MESSAGES.HTTP_ERROR} ${response.status}`)
             }
 
-            const data = await response.json()
-            return data
+            return await response.json()
         } catch (error) {
             if (error.name === 'AbortError') {
-                Logger.error(`${ERROR_MESSAGES.GAME_TIMEOUT} ${gameId})`)
+                Logger.error(`${ERROR_MESSAGES.GAME_TIMEOUT} ${gameId}, slug ${slug})`)
                 throw new Error(ERROR_MESSAGES.TIMEOUT)
             }
+
+            throw error
+        }
+    }
+
+    static async fetchPromoData(secretkey, gameId, slug) {
+        try {
+            const url = `${API.BASE_URL}${API.ENDPOINTS.PROMO}`
+            const response = await fetchWithTimeout(url, {
+                headers: {
+                    accept: API.HEADERS.ACCEPT,
+                    'accept-language': API.HEADERS.ACCEPT_LANGUAGE,
+                    'cache-control': API.HEADERS.CACHE_CONTROL,
+                    'content-type': 'application/json',
+                    pragma: API.HEADERS.PRAGMA,
+                    'x-csrf-token': secretkey,
+                },
+                body: JSON.stringify({
+                    slug,
+                    game_id: gameId,
+                    lang: CHART.LANG,
+                }),
+                method: 'POST',
+                mode: 'cors',
+                credentials: 'include',
+            })
+
+            if (!response.ok) {
+                throw new Error(`${ERROR_MESSAGES.HTTP_ERROR} ${response.status}`)
+            }
+
+            return await response.json()
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                Logger.error(`${ERROR_MESSAGES.GAME_TIMEOUT} ${gameId}, promo slug ${slug})`)
+                throw new Error(ERROR_MESSAGES.TIMEOUT)
+            }
+
             throw error
         }
     }
@@ -159,6 +237,7 @@ export class ApiService {
             } else {
                 Logger.error(ERROR_MESSAGES.CSRF_FAILED, error)
             }
+
             return null
         }
     }

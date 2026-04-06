@@ -24,6 +24,7 @@ export const API = {
     ENDPOINTS: {
         APPLICATIONS: '/console/api/applications',
         CHARTKIT: '/console/api/chartkit',
+        PROMO: '/console/api/metrics-engine/promo/data',
         CONSOLE: '/console/applications',
     },
     PARAMS: {
@@ -44,23 +45,107 @@ export const API = {
 }
 
 export const CHART = {
-    SLUG: 'purchase_amount',
-    PLAYERS_SLUG: 'players',
-    PLAYERS_SERIES_ID: 'Всего',
+    TOTAL_SERIES_IDS: ['Всего', 'Total', 'всего', 'total'],
     LANG: 'ru',
     MOBILE_SLICE: '__total__',
     COUNTRY_SLICE: '__total__',
 }
 
+export const METRIC_DEFINITIONS = {
+    revenue: {
+        key: 'revenue',
+        slug: 'purchase_amount',
+        type: 'revenue-breakdown',
+        label: 'Доход',
+    },
+    players: {
+        key: 'players',
+        slug: 'players',
+        type: 'numeric-total',
+        valueField: 'players',
+        label: 'Игроки',
+    },
+    playtime: {
+        key: 'playtime',
+        slug: 'play_time',
+        type: 'numeric-total',
+        valueField: 'playtimeMinutes',
+        label: 'Плейтайм',
+    },
+    playtimePerPlayer: {
+        key: 'playtimePerPlayer',
+        slug: 'play_time_for_player',
+        type: 'numeric-total',
+        valueField: 'playtimePerPlayer',
+        label: 'Плейтайм на игрока',
+    },
+    directSpend: {
+        key: 'directSpend',
+        slug: 'players',
+        endpoint: 'promo',
+        type: 'numeric-total',
+        valueField: 'directSpend',
+        label: 'Промо: траты',
+    },
+    directPlayers: {
+        key: 'directPlayers',
+        slug: 'players',
+        endpoint: 'promo',
+        type: 'numeric-total',
+        valueField: 'directPlayers',
+        label: 'Промо: игроки',
+    },
+    directOrganicPlayers: {
+        key: 'directOrganicPlayers',
+        slug: 'players',
+        endpoint: 'promo',
+        type: 'numeric-total',
+        valueField: 'directOrganicPlayers',
+        label: 'Органика: игроки',
+    },
+    directMinutes: {
+        key: 'directMinutes',
+        slug: 'playtime',
+        endpoint: 'promo',
+        type: 'numeric-total',
+        valueField: 'directMinutes',
+        label: 'Промо: минуты',
+    },
+    directOrganicMinutes: {
+        key: 'directOrganicMinutes',
+        slug: 'playtime',
+        endpoint: 'promo',
+        type: 'numeric-total',
+        valueField: 'directOrganicMinutes',
+        label: 'Органика: минуты',
+    },
+}
+
 export const REVENUE_SERIES_IDS = {
-    YANDEX_ADS: ['Рекламная сеть Яндекса'],
-    EXTERNAL_ADS: ['Внешние рекламные сети'],
-    IN_APP: ['Инап-покупки', 'In-app purchases'],
+    YANDEX_ADS: ['Рекламная сеть Яндекса', 'Yandex Ads', 'Yandex Advertising Network'],
+    EXTERNAL_ADS: ['Внешние рекламные сети', 'External Ads', 'External Ad Networks'],
+    IN_APP: ['Инап-покупки', 'In-app purchases', 'In-app Purchases'],
 }
 
 export const PATHS = {
     APPLICATIONS: '/console/applications',
     APPLICATIONS_WITH_SLASH: '/console/applications/',
+}
+
+export const PERIODS = {
+    DAY: 'day',
+    WEEK: 'week',
+    MONTH: 'month',
+    MONTH_CURRENT: 'month_current',
+    MONTH_PREV: 'month_prev',
+    CUSTOM: 'custom',
+    ALL_TIME: 'all-time',
+}
+
+export const GROUPING = {
+    DAY: 'day',
+    WEEK: 'week',
+    MONTH: 'month',
 }
 
 export const MONITORING = {
@@ -92,11 +177,26 @@ export const DATA_ATTRIBUTES = {
     LABEL: 'data-label',
 }
 
-export const DEFAULT_CHART_PERIOD = 'month'
+export const DEFAULT_CHART_PERIOD = PERIODS.MONTH
+export const DEFAULT_GROUPING = GROUPING.DAY
+export const DEFAULT_CHART_METRIC = 'revenue'
+
+export const DEFAULT_COLLECTION_OPTIONS = {
+    includePlayers: true,
+    includePlaytime: false,
+    includePromotion: false,
+}
 
 export const CHART_COLORS = {
     total: '#ffffff',
     yandexAds: '#22C55E',
     externalAds: '#3B82F6',
     inApp: '#F97316',
+    players: '#FACC15',
+    playtime: '#A78BFA',
+    directSpend: '#F87171',
+    directPlayers: '#38BDF8',
+    directMinutes: '#34D399',
+    directOrganicPlayers: '#F59E0B',
+    directOrganicMinutes: '#C084FC',
 }

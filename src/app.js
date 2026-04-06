@@ -1,43 +1,71 @@
-import { StatsView } from './views/stats-view.js'
+import {
+    API,
+    DATA_ATTRIBUTES,
+    DEFAULT_CHART_METRIC,
+    DEFAULT_COLLECTION_OPTIONS,
+    DEFAULT_GROUPING,
+    GROUPING,
+    METRIC_DEFINITIONS,
+    PERIODS,
+    TIMINGS,
+} from './config/constants.js'
 import { ApiService } from './services/api.service.js'
 import { DomService } from './services/dom.service.js'
-import { VersionService } from './services/version.service.js'
 import { Logger } from './services/logger.service.js'
-import { TIMINGS, API, REVENUE_SERIES_IDS, DATA_ATTRIBUTES, DEFAULT_CHART_PERIOD, CHART } from './config/constants.js'
-import { formatDate } from './utils/formatters.js'
-import { normalizeRequestDelay } from './utils/validators.js'
+import { VersionService } from './services/version.service.js'
 import {
-    isApplicationsPage,
-    findLatestTimestamp,
+    buildDailyMetricPoints,
+    createBucketOptions,
+    findBucketByStart,
     findEarliestTimestamp,
-    aggregateRevenueData,
-    aggregatePlayersData,
+    findLatestTimestamp,
+    getChartMetricOptions,
+    getCollectedMetricKeys,
+    getSelectedGameIndexes,
+    groupMetricPoints,
+    isApplicationsPage,
     prepareGamesTableData,
     sortGamesTableData,
-    extractUniqueTimestamps,
-    prepareChartData,
+    summarizePoints,
 } from './utils/helpers.js'
+import { formatDate, formatDateRange } from './utils/formatters.js'
+import { normalizeRequestDelay } from './utils/validators.js'
+import { StatsView } from './views/stats-view.js'
+
+const DAY_MS = 24 * 60 * 60 * 1000
 
 export class App {
     constructor() {
         this.view = new StatsView()
         this.domService = new DomService(this.view)
         this.rawData = null
-        this.selectedPeriod = 'month_current'
+        this.gamesInfo = []
+        this.accounts = []
+        this.collectedGameIds = new Set()
+        this.selectedGameIds = new Set()
+        this.selectedAccountIds = new Set()
+        this.selectedPeriod = PERIODS.MONTH_CURRENT
+        this.selectedGrouping = DEFAULT_GROUPING
+        this.selectedChartMetric = DEFAULT_CHART_METRIC
+        this.selectedBucket = null
+        this.customRange = { start: '', end: '' }
+        this.collectionOptions = { ...DEFAULT_COLLECTION_OPTIONS }
+        this.loadedCollectionOptions = { ...DEFAULT_COLLECTION_OPTIONS }
+        this.isCollectionPanelCollapsed = false
         this.csrfToken = null
         this.isLoading = false
+        this.isGamesLoading = false
+        this.loadingProgress = null
         this.settings = {
             enabled: true,
             requestDelay: API.REQUEST_DELAY,
-            selectedPeriod: 'month_current',
+            selectedPeriod: PERIODS.MONTH_CURRENT,
         }
         this.activeTab = 'overview'
         this.sortBy = 'totalRevenue'
         this.sortOrder = 'desc'
-        this.selectedDate = null
-        this.availableDates = []
-        this.dateSelectionMode = 'period'
         this.versionChecked = false
+        this._bootstrapPromise = null
     }
 
     async init() {
@@ -48,28 +76,53 @@ export class App {
             return
         }
 
-        const token = await ApiService.fetchAndParseCsrfToken()
-        if (token) {
-            this.csrfToken = token
-            Logger.info('CSRF token received')
-        } else {
-            Logger.warn('Failed to get CSRF token')
+        this.domService.setInsertCallback(() => this.onBlockInserted())
+        this.domService.startUrlMonitoring((newUrl) => this.handleUrlChange(newUrl))
+        this.domService.tryInsert()
+
+        this.bootstrapMetadata().catch((error) => {
+            Logger.error('Metadata bootstrap failed:', error)
+        })
+    }
+
+    async bootstrapMetadata(force = false) {
+        if (this._bootstrapPromise && !force) {
+            return this._bootstrapPromise
         }
 
-        this.domService.startUrlMonitoring((newUrl) => {
-            this.handleUrlChange(newUrl)
-        })
+        this.isGamesLoading = true
+        this.renderCurrentState()
 
-        this.domService.tryInsert(() => {
-            this.onBlockInserted()
-        })
+        this._bootstrapPromise = (async () => {
+            try {
+                const [token, gamesInfo] = await Promise.all([
+                    this.ensureCsrfToken(),
+                    ApiService.fetchGamesList(),
+                ])
+
+                if (token) {
+                    this.csrfToken = token
+                }
+
+                this.setGamesInfo(gamesInfo)
+            } finally {
+                this.isGamesLoading = false
+                this.renderCurrentState()
+            }
+        })()
+
+        try {
+            await this._bootstrapPromise
+        } finally {
+            this._bootstrapPromise = null
+        }
     }
 
     async loadSettings() {
         const defaultSettings = {
             enabled: true,
             requestDelay: API.REQUEST_DELAY,
-            selectedPeriod: 'month_current',
+            selectedPeriod: PERIODS.MONTH_CURRENT,
         }
 
         try {
@@ -84,7 +137,7 @@ export class App {
                 requestDelay: normalizeRequestDelay(requestDelay),
                 selectedPeriod: this.normalizePeriod(selectedPeriod),
             }
-            
+
             this.selectedPeriod = this.settings.selectedPeriod
         } catch (error) {
             Logger.error('Settings load failed:', error)
@@ -114,14 +167,71 @@ export class App {
         })
     }
 
+    async ensureCsrfToken(force = false) {
+        if (this.csrfToken && !force) {
+            return this.csrfToken
+        }
 
+        const token = await ApiService.fetchAndParseCsrfToken()
+        if (token) {
+            this.csrfToken = token
+            Logger.info('CSRF token received')
+        } else {
+            Logger.warn('Failed to get CSRF token')
+        }
+
+        return this.csrfToken
+    }
+
+    setGamesInfo(gamesInfo = []) {
+        this.gamesInfo = Array.isArray(gamesInfo) ? gamesInfo : []
+
+        const accountMap = new Map()
+        this.gamesInfo.forEach((game) => {
+            accountMap.set(String(game.accountId), {
+                id: String(game.accountId),
+                name: game.accountName,
+            })
+        })
+
+        this.accounts = Array.from(accountMap.values())
+
+        const allGameIds = new Set(this.gamesInfo.map((game) => String(game.id)))
+        const allAccountIds = new Set(this.accounts.map((account) => String(account.id)))
+
+        if (this.selectedGameIds.size === 0) {
+            this.selectedGameIds = allGameIds
+        } else {
+            this.selectedGameIds = new Set(
+                [...this.selectedGameIds].filter((gameId) => allGameIds.has(String(gameId))),
+            )
+
+            if (this.selectedGameIds.size === 0) {
+                this.selectedGameIds = allGameIds
+            }
+        }
+
+        if (this.selectedAccountIds.size === 0) {
+            this.selectedAccountIds = allAccountIds
+        } else {
+            this.selectedAccountIds = new Set(
+                [...this.selectedAccountIds].filter((accountId) =>
+                    allAccountIds.has(String(accountId)),
+                ),
+            )
+
+            if (this.selectedAccountIds.size === 0) {
+                this.selectedAccountIds = allAccountIds
+            }
+        }
+    }
 
     handleUrlChange(newUrl) {
         if (isApplicationsPage(newUrl)) {
             if (!this.view.isInDOM()) {
-                this.domService.tryInsert(() => {
-                    this.onBlockInserted()
-                })
+                this.domService.tryInsert()
+            } else {
+                this.renderCurrentState()
             }
         } else {
             this.domService.removeBlock()
@@ -134,9 +244,7 @@ export class App {
             this.renderVersionInfo()
         }
 
-        setTimeout(() => {
-            this.setupLoadButton()
-        }, TIMINGS.INIT_DELAY)
+        this.renderCurrentState()
 
         setTimeout(() => {
             this.domService.startObserver()
@@ -144,316 +252,359 @@ export class App {
         }, TIMINGS.OBSERVER_START_DELAY)
     }
 
+    getCollectionState() {
+        return {
+            gamesInfo: this.gamesInfo,
+            accounts: this.accounts,
+            selectedGameIds: this.selectedGameIds,
+            selectedAccountIds: this.selectedAccountIds,
+            collectionOptions: this.collectionOptions,
+            isGamesLoading: this.isGamesLoading,
+            isLoading: this.isLoading,
+            hasRawData: Boolean(this.rawData),
+            loadedGameIds: this.collectedGameIds,
+            isCollapsed: this.isCollectionPanelCollapsed,
+        }
+    }
+
+    buildRenderContext() {
+        const selectedIndexes = getSelectedGameIndexes(
+            this.gamesInfo,
+            this.selectedGameIds,
+            this.selectedAccountIds,
+        )
+
+        const collectedIndexes = selectedIndexes.filter((index) =>
+            this.collectedGameIds.has(String(this.gamesInfo[index]?.id)),
+        )
+
+        const displayOptions = this.loadedCollectionOptions
+        const metricKeys = getCollectedMetricKeys(displayOptions)
+        const range = this.getPeriodRange(collectedIndexes, metricKeys)
+        const dailyPoints = buildDailyMetricPoints(this.rawData, range, collectedIndexes, metricKeys)
+        const groupedPoints = groupMetricPoints(dailyPoints, this.selectedGrouping, range)
+        const bucketOptions = createBucketOptions(groupedPoints)
+
+        if (
+            this.selectedBucket &&
+            !bucketOptions.some((option) => String(option.value) === String(this.selectedBucket))
+        ) {
+            this.selectedBucket = null
+        }
+
+        const activeBucket = findBucketByStart(groupedPoints, this.selectedBucket)
+        const effectiveGamesCount = collectedIndexes.length
+        const summary = activeBucket
+            ? {
+                  ...activeBucket,
+                  amount: activeBucket.totalRevenue,
+                  gamesCount: effectiveGamesCount,
+              }
+            : summarizePoints(dailyPoints, effectiveGamesCount)
+
+        const tableRange = activeBucket
+            ? {
+                  start: activeBucket.rangeStart ?? activeBucket.bucketStart,
+                  end: activeBucket.rangeEnd ?? activeBucket.bucketEnd,
+              }
+            : range
+
+        const tableData = sortGamesTableData(
+            prepareGamesTableData(
+                this.rawData,
+                this.gamesInfo,
+                tableRange.start,
+                tableRange.end,
+                collectedIndexes,
+                displayOptions,
+            ),
+            this.sortBy,
+            this.sortOrder,
+        )
+
+        const chartMetricOptions = getChartMetricOptions(displayOptions)
+        if (!chartMetricOptions.some((option) => option.key === this.selectedChartMetric)) {
+            this.selectedChartMetric = chartMetricOptions[0]?.key || DEFAULT_CHART_METRIC
+        }
+
+        return {
+            summary,
+            tableData,
+            chartData: { points: groupedPoints },
+            displayOptions,
+            controls: {
+                selectedPeriod: this.selectedPeriod,
+                selectedGrouping: this.selectedGrouping,
+                bucketOptions,
+                selectedBucket: this.selectedBucket,
+                customRange: this.customRange,
+                chartMetricOptions,
+                selectedChartMetric: this.selectedChartMetric,
+            },
+            dateLabel: activeBucket
+                ? activeBucket.fullLabel
+                : this.formatRangeLabel(range),
+        }
+    }
+
+    renderCurrentState() {
+        if (!this.view.isInDOM()) {
+            return
+        }
+
+        if (this.isLoading && this.loadingProgress) {
+            this.view.showLoadingProgress(
+                this.loadingProgress.current,
+                this.loadingProgress.total,
+                this.loadingProgress,
+            )
+            return
+        }
+
+        const collectionState = this.getCollectionState()
+
+        if (!this.rawData) {
+            this.view.showSetup({ collectionState })
+            this.attachEventHandlers()
+            return
+        }
+
+        const renderContext = this.buildRenderContext()
+
+        if (this.activeTab === 'games-table') {
+            this.view.showGamesTable({
+                gamesData: renderContext.tableData,
+                controls: renderContext.controls,
+                collectionState,
+                sortBy: this.sortBy,
+                sortOrder: this.sortOrder,
+                displayOptions: renderContext.displayOptions,
+            })
+        } else if (this.activeTab === 'chart') {
+            this.view.showChart({
+                chartData: renderContext.chartData,
+                controls: renderContext.controls,
+                collectionState,
+                displayOptions: renderContext.displayOptions,
+            })
+        } else {
+            this.view.showOverview({
+                summary: renderContext.summary,
+                controls: renderContext.controls,
+                collectionState,
+                displayOptions: renderContext.displayOptions,
+            })
+        }
+
+        this.updateDateDisplay(renderContext.dateLabel)
+        this.attachEventHandlers()
+    }
+
+    attachEventHandlers() {
+        this.setupLoadButton()
+        this.setupTabSwitcher()
+        this.setupPeriodButtons()
+        this.setupGroupingButtons()
+        this.setupBucketSelector()
+        this.setupCustomRangeButton()
+        this.setupChartMetricSelector()
+        this.setupCollectionOptions()
+        this.setupCollectionPanelToggle()
+        this.setupFilterButtons()
+        this.setupFilterCheckboxes()
+        this.setupTableSorting()
+    }
+
     setupLoadButton() {
         const button = document.querySelector(`[data-stats="${DATA_ATTRIBUTES.LOAD_BUTTON}"]`)
-        if (button) {
-            button.addEventListener('click', () => this.loadData())
-        }
+        if (!button) return
+
+        button.onclick = () => this.loadData()
     }
 
-    _setupEventHandlers(options = {}) {
-        this.setupPeriodButtons()
-        this.setupTabSwitcher()
-        if (options.withDateSelector !== false) {
-            this.setupDateSelector()
-        }
-        if (options.withTableSorting) {
-            this.setupTableSorting()
-        }
-    }
-
-    _setupDelegatedHandler(selector, handlerKey, handler) {
-        const container = document.querySelector(selector)
-        if (!container) return
-
-        if (this[handlerKey]) {
-            container.removeEventListener('click', this[handlerKey])
-        }
-
-        this[handlerKey] = handler
-        container.addEventListener('click', handler)
+    setupTabSwitcher() {
+        document.querySelectorAll('[data-tab]').forEach((tab) => {
+            tab.onclick = () => {
+                this.activeTab = tab.dataset.tab
+                this.renderCurrentState()
+            }
+        })
     }
 
     setupPeriodButtons() {
-        this._setupDelegatedHandler('.stats-period-selector', '_periodClickHandler', (e) => {
-            const button = e.target.closest('[data-period]')
-            if (button) {
-                this.selectedPeriod = button.dataset.period
-                this.updateDataForPeriod(this.selectedPeriod)
+        document.querySelectorAll('[data-period]').forEach((button) => {
+            button.onclick = () => {
+                this.selectedPeriod = this.normalizePeriod(button.dataset.period)
+                this.selectedBucket = null
+                this.renderCurrentState()
             }
         })
     }
 
-    resetDateSelectorValue() {
-        const selector = document.querySelector('[data-date-selector]')
-        if (selector) {
-            selector.value = ''
-            selector.selectedIndex = 0
-        }
+    setupGroupingButtons() {
+        document.querySelectorAll('[data-grouping]').forEach((button) => {
+            button.onclick = () => {
+                this.selectedGrouping = button.dataset.grouping || GROUPING.DAY
+                this.selectedBucket = null
+                this.renderCurrentState()
+            }
+        })
     }
 
-    setupDateSelector() {
-        const selector = document.querySelector('[data-date-selector]')
+    setupBucketSelector() {
+        const selector = document.querySelector('[data-bucket-selector]')
         if (!selector) return
 
-        if (this._dateChangeHandler) {
-            selector.removeEventListener('change', this._dateChangeHandler)
+        selector.onchange = (event) => {
+            this.selectedBucket = event.target.value || null
+            this.renderCurrentState()
         }
-
-        this._dateChangeHandler = (e) => {
-            const selectedValue = e.target.value
-
-            if (selectedValue === '') {
-                this.dateSelectionMode = 'period'
-                this.selectedDate = null
-                this.updateDataForPeriod(this.selectedPeriod)
-            } else {
-                this.dateSelectionMode = 'specific-date'
-                this.selectedDate = parseInt(selectedValue, 10)
-                this.updateDataForSpecificDate(this.selectedDate)
-            }
-        }
-
-        selector.addEventListener('change', this._dateChangeHandler)
     }
 
-    updateDataForPeriod(period) {
-        if (!this.rawData) return
+    setupCustomRangeButton() {
+        const applyButton = document.querySelector('[data-apply-custom-range]')
+        if (!applyButton) return
 
-        this.selectedPeriod = period
-        this.dateSelectionMode = 'period'
-        this.selectedDate = null
+        applyButton.onclick = () => {
+            const start = document.querySelector('[data-custom-range-start]')?.value || ''
+            const end = document.querySelector('[data-custom-range-end]')?.value || ''
 
-        if (this.activeTab === 'games-table') {
-            this.updateGamesTableForPeriod(period)
-        } else if (this.activeTab === 'chart') {
-            this.updateChartForPeriod(period)
-        } else {
-            const aggregatedData = this.aggregateDataForPeriod(this.rawData, period)
-            this.view.showResults(aggregatedData, period, this.availableDates, this.selectedDate)
-            this._setupEventHandlers()
-        }
-
-        this.updateDateDisplay(period)
-        this.resetDateSelectorValue()
-    }
-
-    updateDataForSpecificDate(timestamp) {
-        if (!this.rawData) return
-
-        if (this.activeTab === 'games-table') {
-            const tableData = prepareGamesTableData(
-                this.rawData.allGamesData,
-                this.rawData.gamesInfo,
-                timestamp,
-                timestamp,
-                'day',
-                this.rawData.allPlayersData,
-            )
-
-            const sortedData = sortGamesTableData(tableData, this.sortBy, this.sortOrder)
-            this.view.showGamesTable(
-                sortedData,
-                'day',
-                this.activeTab,
-                this.availableDates,
-                this.selectedDate,
-            )
-
-            this._setupEventHandlers({ withTableSorting: true })
-        } else if (this.activeTab === 'chart') {
-            // Для графика игнорируем выбор конкретной даты, показываем по периоду
-            this.updateChartForPeriod(DEFAULT_CHART_PERIOD)
-        } else {
-            const aggregated = aggregateRevenueData(this.rawData.allGamesData, timestamp)
-            const players = aggregatePlayersData(this.rawData.allPlayersData, timestamp)
-
-            const dateData = {
-                date: new Date(timestamp),
-                amount: aggregated.total,
-                yandexAds: aggregated.yandexAds,
-                externalAds: aggregated.externalAds,
-                inApp: aggregated.inApp,
-                gamesCount: this.rawData.gamesInfo.length,
-                players: players,
+            if (!start || !end) {
+                alert('Укажите обе даты для своего диапазона')
+                return
             }
 
-            this.view.showResults(dateData, 'day', this.availableDates, this.selectedDate)
-            this._setupEventHandlers()
-        }
+            if (start > end) {
+                alert('Дата начала не может быть позже даты окончания')
+                return
+            }
 
-        const dateElement = this.view.element.querySelector(`[data-stats="${DATA_ATTRIBUTES.DATE}"]`)
-        if (dateElement) {
-            dateElement.textContent = formatDate(new Date(timestamp))
+            this.customRange = { start, end }
+            this.selectedBucket = null
+            this.renderCurrentState()
         }
     }
 
-    updateDateDisplay(period) {
-        if (!this.rawData || !this.rawData.lastTimestamp) return
+    setupChartMetricSelector() {
+        const selector = document.querySelector('[data-chart-metric-selector]')
+        if (!selector) return
 
-        const dateElement = this.view.element.querySelector(`[data-stats="${DATA_ATTRIBUTES.DATE}"]`)
-        if (!dateElement) return
-
-        const range = this.getPeriodRange(this.rawData, period)
-        if (!range) return
-
-        const startDate = new Date(range.start)
-        const endDate = new Date(range.end)
-        dateElement.textContent = `${formatDate(startDate)} — ${formatDate(endDate)}`
+        selector.onchange = (event) => {
+            this.selectedChartMetric = event.target.value || DEFAULT_CHART_METRIC
+            this.renderCurrentState()
+        }
     }
 
-    getPeriodRange(rawData, period) {
-        if (!rawData?.lastTimestamp) return null
+    setupCollectionOptions() {
+        document.querySelectorAll('[data-collection-option]').forEach((checkbox) => {
+            checkbox.onchange = () => {
+                const key = checkbox.dataset.collectionOption
+                if (!key || key === 'revenue') return
 
-        const { lastTimestamp = Date.now() } = rawData
-        const dayMs = 24 * 60 * 60 * 1000
-        const endDate = new Date(lastTimestamp)
-
-        if (period === 'all-time') {
-            const start = findEarliestTimestamp(rawData.allGamesData) || lastTimestamp
-            return { start, end: lastTimestamp }
-        }
-
-        if (period === 'month_current') {
-            const start = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), 1)
-            const calendarEnd = Date.UTC(
-                endDate.getUTCFullYear(),
-                endDate.getUTCMonth() + 1,
-                0,
-                23,
-                59,
-                59,
-                999,
-            )
-            const end = Math.min(calendarEnd, lastTimestamp)
-            return { start, end }
-        }
-
-        if (period === 'month_prev') {
-            const start = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() - 1, 1)
-            const end = Date.UTC(
-                endDate.getUTCFullYear(),
-                endDate.getUTCMonth(),
-                0,
-                23,
-                59,
-                59,
-                999,
-            )
-            return { start, end }
-        }
-
-        const daysMap = {
-            week: 7,
-            month: 30,
-        }
-        const days = daysMap[period] || 7
-        const start = lastTimestamp - (days - 1) * dayMs
-        return { start, end: lastTimestamp }
-    }
-
-    normalizePeriod(period) {
-        const map = {
-            month_3: 'month_current',
-        }
-        const allowed = new Set([
-            'week',
-            'month',
-            'month_current',
-            'month_prev',
-            'all-time',
-        ])
-        const normalized = map[period] || period
-        return allowed.has(normalized) ? normalized : 'month_current'
-    }
-
-    aggregateDataForPeriod(rawData, period) {
-        if (period === 'day') {
-            return rawData.lastDay
-        }
-
-        const range = this.getPeriodRange(rawData, period)
-        if (!range) return rawData.lastDay
-
-        const { start: periodStart, end: periodEnd } = range
-
-        let yandexAdsTotal = 0
-        let externalAdsTotal = 0
-        let inAppTotal = 0
-        let playersTotal = 0
-
-        const { allGamesData, allPlayersData, gamesInfo } = rawData
-
-        allGamesData.forEach((gameData) => {
-            const series = gameData.options?.series
-            if (!series) return
-
-            series.forEach((serie) => {
-                if (!serie.data?.length) return
-
-                const serieId = serie.id || ''
-
-                const pointsInPeriod = serie.data
-                    .filter(
-                        (point) =>
-                            point.x >= periodStart &&
-                            point.x <= periodEnd &&
-                            typeof point.y === 'number',
-                    )
-                    .sort((a, b) => a.x - b.x)
-
-                if (pointsInPeriod.length === 0) return
-
-                const value = pointsInPeriod.reduce((sum, point) => sum + (point.y || 0), 0)
-
-                if (REVENUE_SERIES_IDS.YANDEX_ADS.includes(serieId)) {
-                    yandexAdsTotal += value
-                } else if (REVENUE_SERIES_IDS.EXTERNAL_ADS.includes(serieId)) {
-                    externalAdsTotal += value
-                } else if (REVENUE_SERIES_IDS.IN_APP.includes(serieId)) {
-                    inAppTotal += value
+                this.collectionOptions = {
+                    ...this.collectionOptions,
+                    [key]: checkbox.checked,
                 }
-            })
+
+                this.renderCurrentState()
+            }
+        })
+    }
+
+    setupCollectionPanelToggle() {
+        const toggle = document.querySelector('[data-panel-toggle]')
+        if (!toggle) return
+
+        const handleToggle = () => {
+            this.isCollectionPanelCollapsed = !this.isCollectionPanelCollapsed
+            this.renderCurrentState()
+        }
+
+        toggle.onclick = handleToggle
+        toggle.onkeydown = (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault()
+                handleToggle()
+            }
+        }
+    }
+
+    setupFilterButtons() {
+        document.querySelectorAll('[data-select-all]').forEach((button) => {
+            button.onclick = () => this.toggleAllForType(button.dataset.selectAll, true)
         })
 
-        if (allPlayersData) {
-            allPlayersData.forEach((playerData) => {
-                const series = playerData?.options?.series
-                if (!series) return
+        document.querySelectorAll('[data-clear-all]').forEach((button) => {
+            button.onclick = () => this.toggleAllForType(button.dataset.clearAll, false)
+        })
+    }
 
-                series.forEach((serie) => {
-                    if (!serie.data?.length) return
-
-                    const serieId = serie.id || ''
-                    if (serieId !== CHART.PLAYERS_SERIES_ID) return
-
-                    const pointsInPeriod = serie.data
-                        .filter(
-                            (point) =>
-                                point.x >= periodStart &&
-                                point.x <= periodEnd &&
-                                typeof point.y === 'number',
-                        )
-
-                    if (pointsInPeriod.length === 0) return
-
-                    const value = pointsInPeriod.reduce((sum, point) => sum + (point.y || 0), 0)
-                    playersTotal += value
-                })
-            })
+    toggleAllForType(type, checked) {
+        if (type === 'game') {
+            this.selectedGameIds = checked
+                ? new Set(this.gamesInfo.map((game) => String(game.id)))
+                : new Set()
         }
 
-        const totalAmount = yandexAdsTotal + externalAdsTotal + inAppTotal
-
-        return {
-            date: new Date(periodEnd),
-            amount: totalAmount,
-            yandexAds: yandexAdsTotal,
-            externalAds: externalAdsTotal,
-            inApp: inAppTotal,
-            gamesCount: gamesInfo.length,
-            players: playersTotal,
+        if (type === 'account') {
+            this.selectedAccountIds = checked
+                ? new Set(this.accounts.map((account) => String(account.id)))
+                : new Set()
         }
+
+        this.selectedBucket = null
+        this.renderCurrentState()
+    }
+
+    setupFilterCheckboxes() {
+        document.querySelectorAll('[data-game-filter]').forEach((checkbox) => {
+            checkbox.onchange = () => {
+                const gameId = String(checkbox.dataset.gameFilter || '')
+                if (!gameId) return
+
+                if (checkbox.checked) {
+                    this.selectedGameIds.add(gameId)
+                } else {
+                    this.selectedGameIds.delete(gameId)
+                }
+
+                this.selectedBucket = null
+                this.renderCurrentState()
+            }
+        })
+
+        document.querySelectorAll('[data-account-filter]').forEach((checkbox) => {
+            checkbox.onchange = () => {
+                const accountId = String(checkbox.dataset.accountFilter || '')
+                if (!accountId) return
+
+                if (checkbox.checked) {
+                    this.selectedAccountIds.add(accountId)
+                } else {
+                    this.selectedAccountIds.delete(accountId)
+                }
+
+                this.selectedBucket = null
+                this.renderCurrentState()
+            }
+        })
+    }
+
+    setupTableSorting() {
+        document.querySelectorAll('.stats-table th.sortable').forEach((header) => {
+            header.onclick = () => {
+                const sortBy = header.dataset.sort
+
+                if (this.sortBy === sortBy) {
+                    this.sortOrder = this.sortOrder === 'asc' ? 'desc' : 'asc'
+                } else {
+                    this.sortBy = sortBy
+                    this.sortOrder = 'desc'
+                }
+
+                this.renderCurrentState()
+            }
+        })
     }
 
     async renderVersionInfo() {
@@ -471,270 +622,222 @@ export class App {
             return
         }
 
-        this.isLoading = true
-        const button = document.querySelector(`[data-stats="${DATA_ATTRIBUTES.LOAD_BUTTON}"]`)
-        
-        if (button) {
-            button.disabled = true
-            button.style.opacity = '0.5'
-            button.style.cursor = 'not-allowed'
+        if (this.gamesInfo.length === 0) {
+            await this.bootstrapMetadata(true)
         }
 
+        const selectedIndexes = getSelectedGameIndexes(
+            this.gamesInfo,
+            this.selectedGameIds,
+            this.selectedAccountIds,
+        )
+
+        if (selectedIndexes.length === 0) {
+            alert('Выберите хотя бы одну игру или аккаунт для сбора статистики')
+            return
+        }
+
+        const token = await this.ensureCsrfToken(true)
+        if (!token) {
+            alert('Не удалось получить токен авторизации. Попробуйте обновить страницу.')
+            return
+        }
+
+        this.isLoading = true
+        this.loadingProgress = {
+            current: 0,
+            total: selectedIndexes.length,
+            gameName: '',
+            metricLabel: '',
+        }
+        this.renderCurrentState()
+
         try {
-            this.view.showInitialLoading()
+            const metricKeys = getCollectedMetricKeys(this.collectionOptions)
+            const metricData = Object.fromEntries(
+                Object.keys(METRIC_DEFINITIONS).map((key) => [key, new Array(this.gamesInfo.length).fill(null)]),
+            )
 
-            if (!this.csrfToken) {
-                Logger.error('CSRF token is missing')
-                const token = await ApiService.fetchAndParseCsrfToken()
-                if (token) {
-                    this.csrfToken = token
-                } else {
-                    alert(
-                        'Не удалось получить токен авторизации. Попробуйте перезагрузить страницу.',
-                    )
-                    return
+            this.collectedGameIds = new Set()
+
+            for (let i = 0; i < selectedIndexes.length; i++) {
+                const gameIndex = selectedIndexes[i]
+                const game = this.gamesInfo[gameIndex]
+                const gameId = String(game.id)
+                this.collectedGameIds.add(gameId)
+
+                Logger.info(`Start collecting metrics for game ${gameId} (${game.name})`)
+
+                this.loadingProgress = {
+                    current: i + 1,
+                    total: selectedIndexes.length,
+                    gameName: game.name,
+                    metricLabel: `${metricKeys.length} метрик`,
                 }
-            }
+                this.renderCurrentState()
 
-            const today = new Date()
+                await Promise.all(
+                    metricKeys.map(async (metricKey) => {
+                        const definition = METRIC_DEFINITIONS[metricKey]
+                        const requestKey = `${definition.endpoint || 'chartkit'}:${definition.slug}`
+                        game.__metricRequestCache = game.__metricRequestCache || new Map()
 
-            const gamesInfo = await ApiService.fetchGamesList()
+                        try {
+                            Logger.info(
+                                `Fetching ${metricKey} for game ${gameId} (${game.name}), endpoint ${definition.endpoint || 'chartkit'}, slug ${definition.slug}`,
+                            )
+                            if (!game.__metricRequestCache.has(requestKey)) {
+                                game.__metricRequestCache.set(
+                                    requestKey,
+                                    this.fetchMetricEntry(token, gameId, definition),
+                                )
+                            }
 
-            if (!gamesInfo || gamesInfo.length === 0) {
-                alert('Нет опубликованных игр')
-                this.view.showButton()
-                return
-            }
+                            metricData[metricKey][gameIndex] =
+                                await game.__metricRequestCache.get(requestKey)
+                            Logger.info(`Fetched ${metricKey} for game ${gameId}`)
+                        } catch (error) {
+                            Logger.error(`Failed ${metricKey} for game ${gameId}:`, error)
+                            metricData[metricKey][gameIndex] = null
+                        }
+                    }),
+                )
 
-            const allGamesData = []
-            const allPlayersData = []
+                delete game.__metricRequestCache
 
-            for (let i = 0; i < gamesInfo.length; i++) {
-                const gameId = gamesInfo[i].id
-
-                try {
-                    const [chartkitData, playersData] = await Promise.all([
-                        ApiService.fetchChartkitData(this.csrfToken, gameId, CHART.SLUG),
-                        ApiService.fetchChartkitData(this.csrfToken, gameId, CHART.PLAYERS_SLUG),
-                    ])
-                    allGamesData.push(chartkitData)
-                    allPlayersData.push(playersData)
-                } catch (error) {
-                    Logger.error(`Failed to load data for game ${gameId}:`, error)
-                    allGamesData.push({})
-                    allPlayersData.push({})
+                if (i < selectedIndexes.length - 1) {
+                    await this.delay(this.settings.requestDelay)
                 }
-
-                this.view.showLoadingProgress(i + 1, gamesInfo.length)
-
-                if (i < gamesInfo.length - 1) {
-                    await new Promise((resolve) => setTimeout(resolve, this.settings.requestDelay))
-                }
-            }
-
-            const lastTimestamp = findLatestTimestamp(allGamesData)
-
-            const aggregated = aggregateRevenueData(allGamesData, lastTimestamp)
-            const totalPlayers = aggregatePlayersData(allPlayersData, lastTimestamp)
-
-            const lastDate = lastTimestamp ? new Date(lastTimestamp) : today
-
-            const lastDayData = {
-                date: lastDate,
-                amount: aggregated.total,
-                yandexAds: aggregated.yandexAds,
-                externalAds: aggregated.externalAds,
-                inApp: aggregated.inApp,
-                gamesCount: gamesInfo.length,
-                players: totalPlayers,
             }
 
             this.rawData = {
-                allGamesData: allGamesData,
-                allPlayersData: allPlayersData,
-                gamesInfo: gamesInfo,
-                lastDay: lastDayData,
-                lastTimestamp: lastTimestamp,
+                metricData,
             }
+            this.loadedCollectionOptions = { ...this.collectionOptions }
 
-            const timestamps = extractUniqueTimestamps(allGamesData)
-            this.availableDates = timestamps.map((timestamp) => ({
-                timestamp: timestamp,
-                label: formatDate(new Date(timestamp)),
-            }))
-
-            if (this.availableDates.length > 0) {
-                this.selectedDate = this.availableDates[0].timestamp
-                this.dateSelectionMode = 'specific-date'
-            }
-
-            if (this.dateSelectionMode === 'specific-date' && this.selectedDate) {
-                this.updateDataForSpecificDate(this.selectedDate)
-            } else if (this.activeTab === 'games-table') {
-                this.updateGamesTableForPeriod(this.selectedPeriod)
-            } else if (this.activeTab === 'chart') {
-                this.updateChartForPeriod(DEFAULT_CHART_PERIOD)
-            } else {
-                this.view.showResults(
-                    lastDayData,
-                    this.selectedPeriod,
-                    this.availableDates,
-                    this.selectedDate,
-                )
-                this.updateDateDisplay(this.selectedPeriod)
-                this._setupEventHandlers({ withTableSorting: true })
-            }
-        } catch (error) {
-            Logger.error('Data load failed:', error)
-            this.view.showButton()
-        } finally {
-            this.isLoading = false
-            
-            if (button) {
-                button.disabled = false
-                button.style.opacity = '1'
-                button.style.cursor = 'pointer'
-            }
-        }
-    }
-
-    setupTabSwitcher() {
-        this._setupDelegatedHandler('.stats-tab-switcher', '_tabClickHandler', (e) => {
-            const tab = e.target.closest('[data-tab]')
-            if (tab) {
-                this.switchTab(tab.dataset.tab)
-            }
-        })
-    }
-
-    switchTab(tabKey) {
-        if (!this.rawData) return
-
-        this.activeTab = tabKey
-
-        const tabs = document.querySelectorAll('[data-tab]')
-        tabs.forEach((tab) => {
-            if (tab.dataset.tab === tabKey) {
-                tab.classList.add('active')
-            } else {
-                tab.classList.remove('active')
-            }
-        })
-
-        if (this.dateSelectionMode === 'specific-date' && this.selectedDate) {
-            this.updateDataForSpecificDate(this.selectedDate)
-        } else {
-            if (tabKey === 'games-table') {
-                this.updateGamesTableForPeriod(this.selectedPeriod)
-            } else if (tabKey === 'chart') {
-                // Для графика не вызываем setupDateSelector(), т.к. выбор конкретной даты
-                // не применим к графику — он всегда показывает период
-                this.updateChartForPeriod(DEFAULT_CHART_PERIOD)
-            } else {
-                const aggregatedData = this.aggregateDataForPeriod(
-                    this.rawData,
-                    this.selectedPeriod,
-                )
-                this.view.showResults(
-                    aggregatedData,
-                    this.selectedPeriod,
-                    this.availableDates,
-                    this.selectedDate,
-                )
-                this._setupEventHandlers()
-            }
-
-            this.updateDateDisplay(this.selectedPeriod)
-        }
-    }
-
-    updateGamesTableForPeriod(period) {
-        if (!this.rawData) return
-
-        const range = this.getPeriodRange(this.rawData, period)
-        if (!range) return
-
-        const { start: periodStart, end: periodEnd } = range
-
-        const tableData = prepareGamesTableData(
-            this.rawData.allGamesData,
-            this.rawData.gamesInfo,
-            periodStart,
-            periodEnd,
-            period,
-            this.rawData.allPlayersData,
-        )
-
-        const sortedData = sortGamesTableData(tableData, this.sortBy, this.sortOrder)
-
-        this.view.showGamesTable(
-            sortedData,
-            period,
-            this.activeTab,
-            this.availableDates,
-            this.selectedDate,
-        )
-
-        this._setupEventHandlers({ withTableSorting: true })
-    }
-
-    updateChartForPeriod(period) {
-        if (!this.rawData) return
-
-        const range = this.getPeriodRange(this.rawData, period)
-        if (!range) return
-
-        const { start: periodStart, end: periodEnd } = range
-
-        const chartData = prepareChartData(
-            this.rawData.allGamesData,
-            periodStart,
-            periodEnd,
-        )
-
-        this.view.showChart(chartData, period)
-
-        this._setupEventHandlers({ withDateSelector: false })
-    }
-
-    setupTableSorting() {
-        const headers = document.querySelectorAll('.stats-table th.sortable')
-        headers.forEach((header) => {
-            header.addEventListener('click', (e) => {
-                const sortBy = e.currentTarget.dataset.sort
-
-                if (this.sortBy === sortBy) {
-                    this.sortOrder = this.sortOrder === 'asc' ? 'desc' : 'asc'
-                } else {
-                    this.sortBy = sortBy
-                    this.sortOrder = 'desc'
-                }
-
-                if (this.dateSelectionMode === 'specific-date' && this.selectedDate) {
-                    this.updateDataForSpecificDate(this.selectedDate)
-                } else {
-                    this.updateGamesTableForPeriod(this.selectedPeriod)
+            metricKeys.forEach((metricKey) => {
+                const hasAnyData = metricData[metricKey]?.some((entry) => Boolean(entry))
+                if (!hasAnyData) {
+                    Logger.warn(
+                        `Metric ${metricKey} returned no data for selected games. Check slug ${METRIC_DEFINITIONS[metricKey]?.slug}.`,
+                    )
                 }
             })
-        })
 
-        this.updateSortIndicators()
+            this.selectedBucket = null
+            this.activeTab = 'overview'
+            this.renderCurrentState()
+        } catch (error) {
+            Logger.error('Data load failed:', error)
+            alert('Не удалось собрать статистику. Подробности смотрите в консоли браузера.')
+        } finally {
+            this.isLoading = false
+            this.loadingProgress = null
+            this.renderCurrentState()
+        }
     }
 
-    updateSortIndicators() {
-        const headers = document.querySelectorAll('.stats-table th.sortable')
-        headers.forEach((header) => {
-            const sortBy = header.dataset.sort
-            const arrow = header.querySelector('.sort-arrow')
+    delay(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms))
+    }
 
-            if (sortBy === this.sortBy) {
-                header.classList.add('sorted')
-                arrow.textContent = this.sortOrder === 'asc' ? '↑' : '↓'
-            } else {
-                header.classList.remove('sorted')
-                arrow.textContent = '↕'
+    async fetchMetricEntry(token, gameId, definition) {
+        if (definition?.endpoint === 'promo') {
+            return ApiService.fetchPromoData(token, gameId, definition.slug)
+        }
+
+        return ApiService.fetchChartkitData(token, gameId, definition.slug)
+    }
+
+    updateDateDisplay(label) {
+        const dateElement = this.view.element?.querySelector(`[data-stats="${DATA_ATTRIBUTES.DATE}"]`)
+        if (dateElement) {
+            dateElement.textContent = label || ''
+        }
+    }
+
+    formatRangeLabel(range) {
+        const start = new Date(range.start)
+        const end = new Date(range.end)
+
+        if (start.toDateString() === end.toDateString()) {
+            return formatDate(start)
+        }
+
+        return formatDateRange(start, end)
+    }
+
+    getPeriodRange(selectedIndexes, metricKeys) {
+        const lastTimestamp =
+            findLatestTimestamp(this.rawData?.metricData, metricKeys, selectedIndexes) || Date.now()
+        const endDate = new Date(lastTimestamp)
+
+        if (this.selectedPeriod === PERIODS.ALL_TIME) {
+            const start =
+                findEarliestTimestamp(this.rawData?.metricData, metricKeys, selectedIndexes) ||
+                lastTimestamp
+            return { start, end: lastTimestamp }
+        }
+
+        if (this.selectedPeriod === PERIODS.CUSTOM) {
+            const start = this.parseDateStart(this.customRange.start)
+            const end = this.parseDateEnd(this.customRange.end)
+
+            if (start && end) {
+                return { start, end }
             }
-        })
+        }
+
+        if (this.selectedPeriod === PERIODS.MONTH_CURRENT) {
+            const start = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), 1)
+            const end = Math.min(
+                Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() + 1, 0, 23, 59, 59, 999),
+                lastTimestamp,
+            )
+            return { start, end }
+        }
+
+        if (this.selectedPeriod === PERIODS.MONTH_PREV) {
+            const start = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() - 1, 1)
+            const end = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), 0, 23, 59, 59, 999)
+            return { start, end }
+        }
+
+        if (this.selectedPeriod === PERIODS.DAY) {
+            const start = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate())
+            return { start, end: lastTimestamp }
+        }
+
+        const days =
+            this.selectedPeriod === PERIODS.WEEK
+                ? 7
+                : this.selectedPeriod === PERIODS.MONTH
+                  ? 30
+                  : 30
+
+        return {
+            start: lastTimestamp - (days - 1) * DAY_MS,
+            end: lastTimestamp,
+        }
+    }
+
+    parseDateStart(value) {
+        if (!value) return null
+        const [year, month, day] = value.split('-').map(Number)
+        if (!year || !month || !day) return null
+        return Date.UTC(year, month - 1, day, 0, 0, 0, 0)
+    }
+
+    parseDateEnd(value) {
+        if (!value) return null
+        const [year, month, day] = value.split('-').map(Number)
+        if (!year || !month || !day) return null
+        return Date.UTC(year, month - 1, day, 23, 59, 59, 999)
+    }
+
+    normalizePeriod(period) {
+        const allowed = new Set(Object.values(PERIODS))
+        return allowed.has(period) ? period : PERIODS.MONTH_CURRENT
     }
 
     destroy() {

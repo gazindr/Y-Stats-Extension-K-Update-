@@ -1,4 +1,4 @@
-import { SELECTORS, TIMINGS, MONITORING } from '../config/constants.js'
+import { MONITORING, SELECTORS, TIMINGS } from '../config/constants.js'
 import { isApplicationsPage } from '../utils/helpers.js'
 
 export class DomService {
@@ -12,6 +12,11 @@ export class DomService {
         this.popstateHandler = null
         this.linkClickHandler = null
         this.onPageChange = null
+        this.onBlockInserted = null
+    }
+
+    setInsertCallback(callback) {
+        this.onBlockInserted = callback
     }
 
     insert() {
@@ -20,7 +25,6 @@ export class DomService {
         }
 
         const mainElement = document.querySelector(SELECTORS.MAIN_CONTAINER)
-
         if (!mainElement) {
             return false
         }
@@ -33,29 +37,34 @@ export class DomService {
         const appsHeader = mainElement.querySelector(SELECTORS.APPS_HEADER)
         const page = mainElement.querySelector(SELECTORS.PAGE_CONTAINER)
 
-        if (appsHeader && page) {
-            const statsBlock = this.view.create()
-            mainElement.insertBefore(statsBlock, page)
-            return true
+        if (!appsHeader || !page) {
+            return false
         }
 
-        return false
+        const statsBlock = this.view.create()
+        mainElement.insertBefore(statsBlock, page)
+
+        if (typeof this.onBlockInserted === 'function') {
+            this.onBlockInserted()
+        }
+
+        return true
     }
 
-    tryInsert(onSuccess) {
+    tryInsert() {
         this.initAttempts++
         const success = this.insert()
 
-        if (success) {
-            if (onSuccess) {
-                onSuccess()
-            }
-        } else if (this.initAttempts < TIMINGS.MAX_INIT_ATTEMPTS) {
-            setTimeout(() => this.tryInsert(onSuccess), TIMINGS.INIT_RETRY_INTERVAL)
+        if (!success && this.initAttempts < TIMINGS.MAX_INIT_ATTEMPTS) {
+            setTimeout(() => this.tryInsert(), TIMINGS.INIT_RETRY_INTERVAL)
         }
     }
 
     startObserver() {
+        if (this.observer) {
+            return
+        }
+
         this.observer = new MutationObserver(() => {
             if (isApplicationsPage() && !this.view.isInDOM()) {
                 this.insert()
@@ -74,6 +83,10 @@ export class DomService {
     }
 
     startPeriodicCheck() {
+        if (this.periodicCheckInterval) {
+            return
+        }
+
         this.periodicCheckInterval = setInterval(() => {
             if (isApplicationsPage() && !this.view.isInDOM()) {
                 this.insert()
@@ -84,6 +97,11 @@ export class DomService {
     }
 
     startUrlMonitoring(onPageChange) {
+        if (this.urlCheckInterval) {
+            this.onPageChange = onPageChange
+            return
+        }
+
         this.onPageChange = onPageChange
 
         this.urlCheckInterval = setInterval(() => {
@@ -107,6 +125,7 @@ export class DomService {
                 }
             }
         }
+
         window.addEventListener('popstate', popstateHandler)
         this.popstateHandler = popstateHandler
 
@@ -140,21 +159,24 @@ export class DomService {
 
         this.linkClickHandler = (e) => {
             const target = e.target.closest('a')
-            if (target && target.href) {
-                const url = new URL(target.href)
-                if (url.hostname === window.location.hostname) {
-                    const path = url.pathname
+            if (!target?.href) {
+                return
+            }
 
-                    if (!isApplicationsPage(path) && this.view.isInDOM()) {
-                        const block = document.getElementById(SELECTORS.STATS_BLOCK_ID)
-                        if (block) {
-                            block.style.opacity = '0'
-                            block.style.pointerEvents = 'none'
-                        }
-                    }
+            const url = new URL(target.href)
+            if (url.hostname !== window.location.hostname) {
+                return
+            }
+
+            if (!isApplicationsPage(url.pathname) && this.view.isInDOM()) {
+                const block = document.getElementById(SELECTORS.STATS_BLOCK_ID)
+                if (block) {
+                    block.style.opacity = '0'
+                    block.style.pointerEvents = 'none'
                 }
             }
         }
+
         document.addEventListener('click', this.linkClickHandler, true)
     }
 

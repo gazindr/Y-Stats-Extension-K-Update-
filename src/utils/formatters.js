@@ -6,7 +6,7 @@ export function formatMoney(amount) {
         currency: CURRENCY.CODE,
         minimumFractionDigits: CURRENCY.FRACTION_DIGITS,
         maximumFractionDigits: CURRENCY.FRACTION_DIGITS,
-    }).format(amount)
+    }).format(amount || 0)
 }
 
 export function formatDate(date) {
@@ -17,22 +17,95 @@ export function formatDate(date) {
     })
 }
 
+export function formatMonth(date) {
+    return date.toLocaleDateString('ru-RU', {
+        month: 'long',
+        year: 'numeric',
+    })
+}
+
 const MILLION = 1_000_000
 const THOUSAND = 1_000
 
 export function formatCompactNumber(value) {
-    if (value >= MILLION) {
-        return (value / MILLION).toFixed(1) + 'M'
-    } else if (value >= THOUSAND) {
-        return (value / THOUSAND).toFixed(1) + 'K'
+    const normalized = Number(value) || 0
+
+    if (normalized >= MILLION) {
+        return (normalized / MILLION).toFixed(1) + 'M'
     }
-    return Math.round(value).toString()
+
+    if (normalized >= THOUSAND) {
+        return (normalized / THOUSAND).toFixed(1) + 'K'
+    }
+
+    return Math.round(normalized).toString()
 }
 
 export function formatShortDate(date) {
     const day = date.getUTCDate()
     const month = date.getUTCMonth() + 1
     return `${day}.${month < 10 ? '0' + month : month}`
+}
+
+export function formatMonthShort(date) {
+    return date.toLocaleDateString('ru-RU', {
+        month: 'short',
+        year: 'numeric',
+        timeZone: 'UTC',
+    })
+}
+
+export function formatDateRange(start, end) {
+    return `${formatDate(start)} — ${formatDate(end)}`
+}
+
+export function formatWeekRange(start, end) {
+    return `${formatShortDate(start)} — ${formatShortDate(end)}`
+}
+
+export function formatMinutes(minutes) {
+    const normalized = Math.max(0, Math.round(Number(minutes) || 0))
+    const hours = Math.floor(normalized / 60)
+    const restMinutes = normalized % 60
+
+    if (hours === 0) {
+        return `${restMinutes} мин`
+    }
+
+    if (restMinutes === 0) {
+        return `${hours} ч`
+    }
+
+    return `${hours} ч ${restMinutes} мин`
+}
+
+export function formatMetricValue(value, formatter = 'number') {
+    if (formatter === 'currency') {
+        return formatMoney(value)
+    }
+
+    if (formatter === 'minutes') {
+        return formatMinutes(value)
+    }
+
+    return (Number(value) || 0).toLocaleString('ru-RU')
+}
+
+export function formatAxisValue(value, formatter = 'number') {
+    if (formatter === 'currency') {
+        return formatCompactNumber(value)
+    }
+
+    if (formatter === 'minutes') {
+        const normalized = Number(value) || 0
+        if (normalized >= 60) {
+            return `${Math.round(normalized / 60)}ч`
+        }
+
+        return `${Math.round(normalized)}м`
+    }
+
+    return formatCompactNumber(value)
 }
 
 export function hexToRgba(hex, alpha) {

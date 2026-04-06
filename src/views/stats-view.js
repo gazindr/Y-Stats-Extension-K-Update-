@@ -1,5 +1,13 @@
-import { formatMoney, formatCompactNumber, hexToRgba } from '../utils/formatters.js'
-import { SELECTORS, DATA_ATTRIBUTES, CHART_COLORS } from '../config/constants.js'
+import { CHART_COLORS, DATA_ATTRIBUTES, SELECTORS } from '../config/constants.js'
+import { formatAxisValue, formatMetricValue, hexToRgba } from '../utils/formatters.js'
+import {
+    createCollectionPanel,
+    createDashboardControls,
+    createDiv,
+    createInitialStructure,
+    createTabSwitcher,
+} from './panel-builder.js'
+import { createGamesTable, createSummaryRows } from './table-builder.js'
 
 export class StatsView {
     constructor() {
@@ -13,7 +21,7 @@ export class StatsView {
         block.id = SELECTORS.STATS_BLOCK_ID
         block.setAttribute('data-extension-block', 'true')
 
-        const container = this._createInitialStructure()
+        const container = createInitialStructure()
         block.appendChild(container)
 
         this.element = block
@@ -31,36 +39,40 @@ export class StatsView {
         }
     }
 
-    // ==================== Public render methods ====================
-
-    showInitialLoading() {
+    showSetup({ collectionState }) {
         const content = this._getContentAndClear()
         if (!content) return
 
+        this._hideDateElement()
+        content.appendChild(createCollectionPanel(collectionState))
+    }
+
+    showLoadingProgress(current, total, details = {}) {
+        const content = this._getContentAndClear()
+        if (!content) return
+
+        this._hideDateElement()
+
+        const percent = total > 0 ? Math.round((current / total) * 100) : 0
         const loadingDiv = document.createElement('div')
         loadingDiv.className = 'stats-loading'
 
         const spinner = document.createElement('div')
         spinner.className = 'stats-spinner'
-
-        const loadingText = this._createDiv('stats-loading-text', 'Загружаем данные...')
-
         loadingDiv.appendChild(spinner)
-        loadingDiv.appendChild(loadingText)
-        content.appendChild(loadingDiv)
-    }
 
-    showLoadingProgress(current, total) {
-        const content = this._getContentAndClear()
-        if (!content) return
+        loadingDiv.appendChild(createDiv('stats-loading-text', 'Собираем статистику...'))
+        loadingDiv.appendChild(createDiv('stats-loading-counter', `${current} из ${total} игр`))
 
-        const percent = Math.round((current / total) * 100)
+        if (details.gameName) {
+            loadingDiv.appendChild(createDiv('stats-loading-details', `Игра: ${details.gameName}`))
+        }
 
-        const loadingDiv = document.createElement('div')
-        loadingDiv.className = 'stats-loading'
-
-        loadingDiv.appendChild(this._createDiv('stats-loading-text', 'Загружаем данные...'))
-        loadingDiv.appendChild(this._createDiv('stats-loading-counter', `${current} из ${total} игр`))
+        if (details.metricLabel) {
+            loadingDiv.appendChild(
+                createDiv('stats-loading-details', `Метрика: ${details.metricLabel}`),
+            )
+        }
 
         const progressBar = document.createElement('div')
         progressBar.className = 'stats-progress-bar'
@@ -71,68 +83,42 @@ export class StatsView {
 
         progressBar.appendChild(progressFill)
         loadingDiv.appendChild(progressBar)
-        loadingDiv.appendChild(this._createDiv('stats-loading-percent', `${percent}%`))
+        loadingDiv.appendChild(createDiv('stats-loading-percent', `${percent}%`))
 
         content.appendChild(loadingDiv)
     }
 
-    showButton() {
+    showOverview({ summary, controls, collectionState, displayOptions }) {
         const content = this._getContentAndClear()
         if (!content) return
 
-        content.appendChild(this._createLoadButtonWrapper())
+        this._showDateElement()
+        content.appendChild(createCollectionPanel(collectionState))
+        content.appendChild(createTabSwitcher('overview'))
+        content.appendChild(createDashboardControls(controls))
+        content.appendChild(createSummaryRows(summary, displayOptions))
     }
 
-    showResults(data, selectedPeriod = 'day', availableDates = [], selectedDate = null) {
-        this._showDateElement()
+    showGamesTable({ gamesData, controls, collectionState, sortBy, sortOrder, displayOptions }) {
         const content = this._getContentAndClear()
         if (!content) return
 
-        content.appendChild(this._createTabSwitcher('overview'))
-        content.appendChild(this._createSelectorsWrapper(availableDates, selectedDate, selectedPeriod))
-
-        content.appendChild(this._createStatsRow('stats-row--total', [
-            { label: 'Общий заработок', value: formatMoney(data.amount), size: 'large' },
-        ]))
-
-        content.appendChild(this._createStatsRow('stats-row--sources', [
-            { label: 'РСЯ', value: formatMoney(data.yandexAds || 0), size: 'medium' },
-            { label: 'Внешние сети', value: formatMoney(data.externalAds || 0), size: 'medium' },
-            { label: 'In-app', value: formatMoney(data.inApp || 0), size: 'medium' },
-        ]))
-
-        content.appendChild(this._createStatsRow('stats-row--players', [
-            { label: 'Игроков', value: (data.players || 0).toLocaleString('ru-RU'), size: 'medium' },
-        ]))
-
-        content.appendChild(this._createStatsRow('stats-row--footer', [
-            {
-                label: 'Количество игр',
-                value: `${data.gamesCount} игр`,
-                size: 'small',
-                additionalClass: 'stats-item--games',
-            },
-        ]))
+        this._showDateElement()
+        content.appendChild(createCollectionPanel(collectionState))
+        content.appendChild(createTabSwitcher('games-table'))
+        content.appendChild(createDashboardControls(controls))
+        content.appendChild(createGamesTable(gamesData, displayOptions, sortBy, sortOrder))
     }
 
-    showGamesTable(gamesData, selectedPeriod = 'day', activeTab = 'games-table', availableDates = [], selectedDate = null) {
-        this._showDateElement()
+    showChart({ chartData, controls, collectionState }) {
         const content = this._getContentAndClear()
         if (!content) return
 
-        content.appendChild(this._createTabSwitcher(activeTab))
-        content.appendChild(this._createSelectorsWrapper(availableDates, selectedDate, selectedPeriod))
-        content.appendChild(this._createGamesTable(gamesData))
-    }
-
-    showChart(chartData, selectedPeriod = 'month_current') {
         this._showDateElement()
-        const content = this._getContentAndClear()
-        if (!content) return
-
-        content.appendChild(this._createTabSwitcher('chart'))
-        content.appendChild(this._createPeriodSelector(selectedPeriod))
-        content.appendChild(this._createChart(chartData))
+        content.appendChild(createCollectionPanel(collectionState))
+        content.appendChild(createTabSwitcher('chart'))
+        content.appendChild(createDashboardControls(controls, { includeChartMetric: true }))
+        content.appendChild(this._createChart(chartData, controls.selectedChartMetric))
     }
 
     showVersionInfo(info) {
@@ -153,7 +139,7 @@ export class StatsView {
 
         const text = document.createElement('span')
         text.className = 'stats-version__text'
-        text.textContent = `Доступна новая версия ${remote}. Вы используете ${current}`
+        text.textContent = `Доступна новая версия ${remote}. У вас ${current}`
         versionBlock.appendChild(text)
 
         const link = document.createElement('a')
@@ -168,8 +154,6 @@ export class StatsView {
         versionBlock.style.display = ''
     }
 
-    // ==================== Private helpers ====================
-
     _getContentAndClear() {
         if (!this.element) return null
 
@@ -177,277 +161,30 @@ export class StatsView {
         if (content) {
             content.textContent = ''
         }
+
+        if (this._chartInstance) {
+            this._chartInstance.destroy()
+            this._chartInstance = null
+        }
+
         return content
     }
 
     _showDateElement() {
-        if (!this.element) return
-
-        const dateElement = this.element.querySelector(`[data-stats="${DATA_ATTRIBUTES.DATE}"]`)
+        const dateElement = this.element?.querySelector(`[data-stats="${DATA_ATTRIBUTES.DATE}"]`)
         if (dateElement) {
             dateElement.style.display = ''
         }
     }
 
-    _createDiv(className, textContent = '') {
-        const div = document.createElement('div')
-        div.className = className
-        if (textContent) {
-            div.textContent = textContent
+    _hideDateElement() {
+        const dateElement = this.element?.querySelector(`[data-stats="${DATA_ATTRIBUTES.DATE}"]`)
+        if (dateElement) {
+            dateElement.style.display = 'none'
         }
-        return div
     }
 
-    _createLoadButtonWrapper() {
-        const center = document.createElement('div')
-        center.className = 'stats-center'
-
-        const button = document.createElement('button')
-        button.className = 'stats-load-button'
-        button.setAttribute('data-stats', DATA_ATTRIBUTES.LOAD_BUTTON)
-        button.textContent = 'Загрузить статистику'
-
-        center.appendChild(button)
-        return center
-    }
-
-    _createSelectorsWrapper(availableDates, selectedDate, selectedPeriod) {
-        const wrapper = document.createElement('div')
-        wrapper.className = 'stats-selectors-wrapper'
-
-        if (availableDates.length > 0) {
-            wrapper.appendChild(this._createDateSelector(availableDates, selectedDate))
-        }
-
-        wrapper.appendChild(this._createPeriodSelector(selectedPeriod))
-        return wrapper
-    }
-
-    // ==================== Structure creators ====================
-
-    _createInitialStructure() {
-        const container = document.createElement('div')
-        container.className = 'stats-container'
-
-        const header = document.createElement('div')
-        header.className = 'stats-header'
-
-        const title = document.createElement('h2')
-        title.textContent = 'Y-Stats-Extension — Статистика заработка'
-
-        const dateSpan = document.createElement('span')
-        dateSpan.className = 'stats-date'
-        dateSpan.setAttribute('data-stats', DATA_ATTRIBUTES.DATE)
-        dateSpan.style.display = 'none'
-
-        header.appendChild(title)
-        header.appendChild(dateSpan)
-
-        const content = document.createElement('div')
-        content.className = 'stats-content'
-        content.setAttribute('data-stats', DATA_ATTRIBUTES.CONTENT)
-
-        const version = document.createElement('div')
-        version.className = 'stats-version'
-        version.setAttribute('data-stats', DATA_ATTRIBUTES.VERSION)
-        version.style.display = 'none'
-
-        content.appendChild(this._createLoadButtonWrapper())
-
-        container.appendChild(header)
-        container.appendChild(version)
-        container.appendChild(content)
-
-        return container
-    }
-
-    _createPeriodSelector(selectedPeriod) {
-        const selector = document.createElement('div')
-        selector.className = 'stats-period-selector'
-
-        const periods = [
-            { key: 'week', label: '7 дней' },
-            { key: 'month', label: '30 дней' },
-            { key: 'month_current', label: 'Этот месяц' },
-            { key: 'month_prev', label: 'Прошлый месяц' },
-            { key: 'all-time', label: 'Все время' },
-        ]
-
-        periods.forEach(({ key, label }) => {
-            const button = document.createElement('button')
-            button.className = 'stats-period-btn'
-            if (selectedPeriod === key) {
-                button.classList.add('active')
-            }
-            button.setAttribute('data-period', key)
-            button.textContent = label
-            selector.appendChild(button)
-        })
-
-        return selector
-    }
-
-    _createDateSelector(availableDates, selectedTimestamp = null) {
-        const select = document.createElement('select')
-        select.className = 'stats-date-select'
-        select.setAttribute('data-date-selector', 'true')
-
-        const defaultOption = document.createElement('option')
-        defaultOption.value = ''
-        defaultOption.textContent = 'Выбрать конкретный день'
-        defaultOption.disabled = true
-        defaultOption.selected = selectedTimestamp === null
-        select.appendChild(defaultOption)
-
-        availableDates.forEach(({ timestamp, label }) => {
-            const option = document.createElement('option')
-            option.value = timestamp
-            option.textContent = label
-            option.selected = selectedTimestamp === timestamp
-            select.appendChild(option)
-        })
-
-        select.value = selectedTimestamp !== null ? selectedTimestamp : ''
-        return select
-    }
-
-    _createTabSwitcher(activeTab = 'overview') {
-        const tabSwitcher = document.createElement('div')
-        tabSwitcher.className = 'stats-tab-switcher'
-
-        const tabs = [
-            { key: 'overview', label: 'Общая статистика' },
-            { key: 'chart', label: 'График' },
-            { key: 'games-table', label: 'Таблица игр' },
-        ]
-
-        tabs.forEach(({ key, label }) => {
-            const tabButton = document.createElement('button')
-            tabButton.className = 'stats-tab-btn'
-            if (activeTab === key) {
-                tabButton.classList.add('active')
-            }
-            tabButton.setAttribute('data-tab', key)
-            tabButton.textContent = label
-            tabSwitcher.appendChild(tabButton)
-        })
-
-        return tabSwitcher
-    }
-
-    _createStatsRow(rowClass, items) {
-        const row = document.createElement('div')
-        row.className = `stats-row ${rowClass}`
-
-        items.forEach(({ label, value, size, additionalClass }) => {
-            const statsItem = document.createElement('div')
-            statsItem.className = 'stats-item'
-            if (additionalClass) {
-                statsItem.classList.add(additionalClass)
-            }
-
-            const labelEl = document.createElement('span')
-            labelEl.className = 'stats-label'
-            labelEl.textContent = label
-
-            const valueEl = document.createElement('span')
-            valueEl.className = `stats-value stats-value--${size}`
-            valueEl.textContent = value
-
-            statsItem.appendChild(labelEl)
-            statsItem.appendChild(valueEl)
-            row.appendChild(statsItem)
-        })
-
-        return row
-    }
-
-    // ==================== Table ====================
-
-    _createGamesTable(gamesData) {
-        const tableWrapper = document.createElement('div')
-        tableWrapper.className = 'stats-table-wrapper'
-
-        const table = document.createElement('table')
-        table.className = 'stats-table'
-
-        table.appendChild(this._createTableHeader())
-
-        const tbody = document.createElement('tbody')
-        gamesData.forEach((game) => {
-            tbody.appendChild(this._createTableRow(game))
-        })
-        table.appendChild(tbody)
-
-        tableWrapper.appendChild(table)
-        return tableWrapper
-    }
-
-    _createTableHeader() {
-        const thead = document.createElement('thead')
-        const tr = document.createElement('tr')
-
-        const headers = [
-            { sort: 'name', label: 'Название игры' },
-            { sort: 'id', label: 'ID игры' },
-            { sort: 'totalRevenue', label: 'Общий доход' },
-            { sort: 'yandexAds', label: 'РСЯ' },
-            { sort: 'externalAds', label: 'Внешние сети' },
-            { sort: 'inApp', label: 'In-app' },
-            { sort: 'players', label: 'Игроки' },
-            { sort: 'revenuePerPlayer', label: '₽/игрок' },
-        ]
-
-        headers.forEach(({ sort, label }) => {
-            const th = document.createElement('th')
-            th.className = 'sortable'
-            th.setAttribute('data-sort', sort)
-            th.textContent = label + ' '
-
-            const arrow = document.createElement('span')
-            arrow.className = 'sort-arrow'
-            arrow.textContent = '↕'
-            th.appendChild(arrow)
-
-            tr.appendChild(th)
-        })
-
-        thead.appendChild(tr)
-        return thead
-    }
-
-    _createTableRow(game) {
-        const row = document.createElement('tr')
-
-        const cells = [
-            { className: 'game-name', label: 'Название', value: game.name || 'Неизвестная игра' },
-            { className: 'game-id', label: 'ID игры', value: game.id || '-' },
-            { className: 'revenue-cell', label: 'Общий доход', value: formatMoney(game.totalRevenue) },
-            { className: 'revenue-cell', label: 'РСЯ', value: formatMoney(game.yandexAds) },
-            { className: 'revenue-cell', label: 'Внешние сети', value: formatMoney(game.externalAds) },
-            { className: 'revenue-cell', label: 'In-app', value: formatMoney(game.inApp) },
-            { className: 'players-cell', label: 'Игроки', value: (game.players || 0).toLocaleString('ru-RU') },
-            { className: 'revenue-cell', label: '₽/игрок', value: formatMoney(game.revenuePerPlayer || 0) },
-        ]
-
-        cells.forEach(({ className, label, value }) => {
-            row.appendChild(this._createTableCell(className, label, value))
-        })
-
-        return row
-    }
-
-    _createTableCell(className, dataLabel, content) {
-        const cell = document.createElement('td')
-        cell.className = className
-        cell.setAttribute('data-label', dataLabel)
-        cell.textContent = content
-        return cell
-    }
-
-    // ==================== Chart ====================
-
-    _createChart(chartData) {
+    _createChart(chartData = {}, selectedChartMetric = 'revenue') {
         const container = document.createElement('div')
         container.className = 'stats-chart-container'
 
@@ -467,17 +204,12 @@ export class StatsView {
         chartWrapper.appendChild(canvas)
         container.appendChild(chartWrapper)
 
-        if (this._chartInstance) {
-            this._chartInstance.destroy()
-            this._chartInstance = null
-        }
+        const labels = chartData.points.map((point) => point.dateLabel)
+        const config = this._getChartSeriesConfig(chartData.points, selectedChartMetric)
 
-        const { points } = chartData
-        const labels = points.map(p => p.dateLabel)
-
-        // Create chart after canvas is in DOM (requestAnimationFrame ensures canvas is rendered)
         requestAnimationFrame(() => {
             if (!document.body.contains(canvas)) return
+
             const ctx = canvas.getContext('2d')
             const gradients = this._createChartGradients(ctx)
 
@@ -485,58 +217,180 @@ export class StatsView {
                 type: 'line',
                 data: {
                     labels,
-                    datasets: [
-                        this._createDatasetConfig('Всего', points.map(p => p.total), CHART_COLORS.total, gradients.total, { borderWidth: 3, hidden: false }),
-                        this._createDatasetConfig('РСЯ', points.map(p => p.yandexAds), CHART_COLORS.yandexAds, gradients.yandex, { hidden: true }),
-                        this._createDatasetConfig('Внешние сети', points.map(p => p.externalAds), CHART_COLORS.externalAds, gradients.external, { hidden: true }),
-                        this._createDatasetConfig('In-app', points.map(p => p.inApp), CHART_COLORS.inApp, gradients.inApp, { hidden: true }),
-                    ],
+                    datasets: config.datasets.map((dataset) =>
+                        this._createDatasetConfig(dataset, gradients),
+                    ),
                 },
-                options: this._getChartOptions(),
+                options: this._getChartOptions(config.formatter),
             })
         })
 
         return container
     }
 
-    _createChartGradients(ctx) {
-        const createGradient = (color, opacityTop = 0.3, opacityMid = 0.1) => {
-            const g = ctx.createLinearGradient(0, 0, 0, 300)
-            g.addColorStop(0, hexToRgba(color, opacityTop))
-            g.addColorStop(0.5, hexToRgba(color, opacityMid))
-            g.addColorStop(1, hexToRgba(color, 0))
-            return g
+    _getChartSeriesConfig(points, selectedChartMetric) {
+        const map = {
+            players: {
+                formatter: 'number',
+                datasets: [
+                    {
+                        label: 'Игроки',
+                        data: points.map((p) => p.players),
+                        color: CHART_COLORS.players,
+                        gradient: 'players',
+                    },
+                ],
+            },
+            playtime: {
+                formatter: 'minutes',
+                datasets: [
+                    {
+                        label: 'Плейтайм',
+                        data: points.map((p) => p.playtimeMinutes),
+                        color: CHART_COLORS.playtime,
+                        gradient: 'playtime',
+                    },
+                ],
+            },
+            playtimePerPlayer: {
+                formatter: 'minutes',
+                datasets: [
+                    {
+                        label: 'Плейтайм на игрока',
+                        data: points.map((p) => p.playtimePerPlayer),
+                        color: CHART_COLORS.playtime,
+                        gradient: 'playtime',
+                    },
+                ],
+            },
+            directSpend: {
+                formatter: 'currency',
+                datasets: [
+                    {
+                        label: 'Промо: траты',
+                        data: points.map((p) => p.directSpend),
+                        color: CHART_COLORS.directSpend,
+                        gradient: 'directSpend',
+                    },
+                ],
+            },
+            directPlayers: {
+                formatter: 'number',
+                datasets: [
+                    {
+                        label: 'Промо',
+                        data: points.map((p) => p.directPlayers),
+                        color: CHART_COLORS.directPlayers,
+                        gradient: 'directPlayers',
+                    },
+                    {
+                        label: 'Органика',
+                        data: points.map((p) => p.directOrganicPlayers),
+                        color: CHART_COLORS.directOrganicPlayers,
+                        gradient: 'directOrganicPlayers',
+                    },
+                ],
+            },
+            directMinutes: {
+                formatter: 'minutes',
+                datasets: [
+                    {
+                        label: 'Промо',
+                        data: points.map((p) => p.directMinutes),
+                        color: CHART_COLORS.directMinutes,
+                        gradient: 'directMinutes',
+                    },
+                    {
+                        label: 'Органика',
+                        data: points.map((p) => p.directOrganicMinutes),
+                        color: CHART_COLORS.directOrganicMinutes,
+                        gradient: 'directOrganicMinutes',
+                    },
+                ],
+            },
+        }
+
+        if (map[selectedChartMetric]) {
+            return map[selectedChartMetric]
         }
 
         return {
-            total: createGradient(CHART_COLORS.total, 0.25, 0.08),
+            formatter: 'currency',
+            datasets: [
+                {
+                    label: 'Всего',
+                    data: points.map((point) => point.totalRevenue),
+                    color: CHART_COLORS.total,
+                    gradient: 'total',
+                    borderWidth: 3,
+                    hidden: false,
+                },
+                {
+                    label: 'РСЯ',
+                    data: points.map((point) => point.yandexAds),
+                    color: CHART_COLORS.yandexAds,
+                    gradient: 'yandex',
+                    hidden: true,
+                },
+                {
+                    label: 'Внешние сети',
+                    data: points.map((point) => point.externalAds),
+                    color: CHART_COLORS.externalAds,
+                    gradient: 'external',
+                    hidden: true,
+                },
+                {
+                    label: 'In-app',
+                    data: points.map((point) => point.inApp),
+                    color: CHART_COLORS.inApp,
+                    gradient: 'inApp',
+                    hidden: true,
+                },
+            ],
+        }
+    }
+
+    _createChartGradients(ctx) {
+        const createGradient = (color, opacityTop = 0.3, opacityMid = 0.1) => {
+            const gradient = ctx.createLinearGradient(0, 0, 0, 300)
+            gradient.addColorStop(0, hexToRgba(color, opacityTop))
+            gradient.addColorStop(0.55, hexToRgba(color, opacityMid))
+            gradient.addColorStop(1, hexToRgba(color, 0))
+            return gradient
+        }
+
+        return {
+            total: createGradient(CHART_COLORS.total, 0.22, 0.08),
             yandex: createGradient(CHART_COLORS.yandexAds),
             external: createGradient(CHART_COLORS.externalAds),
             inApp: createGradient(CHART_COLORS.inApp),
+            players: createGradient(CHART_COLORS.players),
+            playtime: createGradient(CHART_COLORS.playtime),
+            directSpend: createGradient(CHART_COLORS.directSpend),
+            directPlayers: createGradient(CHART_COLORS.directPlayers),
+            directMinutes: createGradient(CHART_COLORS.directMinutes),
+            directOrganicPlayers: createGradient(CHART_COLORS.directOrganicPlayers),
+            directOrganicMinutes: createGradient(CHART_COLORS.directOrganicMinutes),
         }
     }
 
-    _createDatasetConfig(label, data, color, gradient, options = {}) {
-        const hoverColor = hexToRgba(color, color === CHART_COLORS.total ? 0.8 : 0.5)
-
+    _createDatasetConfig(dataset, gradients) {
         return {
-            label,
-            data,
-            borderColor: color,
-            backgroundColor: gradient,
-            borderWidth: options.borderWidth || 2,
+            label: dataset.label,
+            data: dataset.data,
+            borderColor: dataset.color,
+            backgroundColor: gradients[dataset.gradient] || hexToRgba(dataset.color, 0.18),
             fill: true,
-            tension: 0.4,
+            tension: 0.35,
+            borderWidth: dataset.borderWidth || 2.5,
             pointRadius: 0,
-            pointHoverRadius: options.borderWidth === 3 ? 6 : 5,
-            pointHoverBackgroundColor: color,
-            pointHoverBorderColor: hoverColor,
-            pointHoverBorderWidth: 2,
-            hidden: options.hidden ?? false,
+            pointHoverRadius: 4,
+            pointHitRadius: 14,
+            hidden: Boolean(dataset.hidden),
         }
     }
 
-    _getChartOptions() {
+    _getChartOptions(formatter) {
         return {
             responsive: true,
             maintainAspectRatio: false,
@@ -544,108 +398,52 @@ export class StatsView {
                 mode: 'index',
                 intersect: false,
             },
-            animation: {
-                duration: 750,
-                easing: 'easeOutQuart',
-            },
             plugins: {
-                legend: this._getLegendConfig(),
-                tooltip: this._getTooltipConfig(),
+                legend: {
+                    display: true,
+                    labels: {
+                        color: 'rgba(255, 255, 255, 0.92)',
+                        usePointStyle: true,
+                        pointStyle: 'circle',
+                        boxWidth: 10,
+                        boxHeight: 10,
+                        padding: 16,
+                    },
+                },
+                tooltip: {
+                    backgroundColor: 'rgba(15, 23, 42, 0.95)',
+                    titleColor: '#fff',
+                    bodyColor: '#fff',
+                    borderColor: 'rgba(255, 255, 255, 0.12)',
+                    borderWidth: 1,
+                    padding: 12,
+                    displayColors: true,
+                    callbacks: {
+                        label: (context) =>
+                            `${context.dataset.label}: ${formatMetricValue(context.parsed.y || 0, formatter)}`,
+                    },
+                },
             },
             scales: {
                 x: {
-                    grid: { color: 'rgba(255, 255, 255, 0.06)', drawBorder: false },
-                    border: { display: false },
+                    grid: {
+                        color: 'rgba(255, 255, 255, 0.08)',
+                    },
                     ticks: {
-                        color: 'rgba(255, 255, 255, 0.5)',
-                        font: { size: 11, family: 'system-ui, sans-serif' },
-                        padding: 8,
+                        color: 'rgba(255, 255, 255, 0.75)',
+                        maxRotation: 0,
                     },
                 },
                 y: {
                     beginAtZero: true,
-                    grid: { color: 'rgba(255, 255, 255, 0.06)', drawBorder: false },
-                    border: { display: false },
+                    grid: {
+                        color: 'rgba(255, 255, 255, 0.08)',
+                    },
                     ticks: {
-                        color: 'rgba(255, 255, 255, 0.5)',
-                        font: { size: 11, family: 'system-ui, sans-serif' },
-                        padding: 12,
-                        callback: (value) => formatCompactNumber(value),
+                        color: 'rgba(255, 255, 255, 0.75)',
+                        callback: (value) => formatAxisValue(value, formatter),
                     },
                 },
-            },
-        }
-    }
-
-    _getLegendConfig() {
-        return {
-            display: true,
-            position: 'top',
-            align: 'end',
-            labels: {
-                color: 'rgba(255, 255, 255, 0.8)',
-                font: { size: 12, weight: '500', family: 'system-ui, sans-serif' },
-                padding: 20,
-                usePointStyle: true,
-                pointStyle: 'circle',
-                boxWidth: 8,
-                boxHeight: 8,
-            },
-            onClick: (e, legendItem, legend) => {
-                const chart = legend.chart
-                const clickedIndex = legendItem.datasetIndex
-                const datasets = chart.data.datasets
-
-                if (clickedIndex === 0) {
-                    // Клик на "Всего" — показать только "Всего", скрыть остальные
-                    datasets.forEach((_, i) => {
-                        chart.getDatasetMeta(i).hidden = (i !== 0)
-                    })
-                } else {
-                    const meta = chart.getDatasetMeta(clickedIndex)
-                    const isCurrentlyHidden = meta.hidden
-
-                    if (isCurrentlyHidden) {
-                        meta.hidden = false
-                        chart.getDatasetMeta(0).hidden = true
-                    } else {
-                        const visibleOthers = datasets.filter((_, i) =>
-                            i !== 0 && !chart.getDatasetMeta(i).hidden
-                        ).length
-
-                        if (visibleOthers > 1) {
-                            meta.hidden = true
-                        } else {
-                            meta.hidden = true
-                            chart.getDatasetMeta(0).hidden = false
-                        }
-                    }
-                }
-
-                chart.update()
-            },
-        }
-    }
-
-    _getTooltipConfig() {
-        return {
-            enabled: true,
-            backgroundColor: 'rgba(15, 23, 42, 0.95)',
-            titleColor: '#F8FAFC',
-            titleFont: { size: 13, weight: '600', family: 'system-ui, sans-serif' },
-            bodyColor: 'rgba(248, 250, 252, 0.85)',
-            bodyFont: { size: 12, weight: '400', family: 'system-ui, sans-serif' },
-            borderColor: 'rgba(255, 255, 255, 0.15)',
-            borderWidth: 1,
-            padding: { top: 12, bottom: 12, left: 16, right: 16 },
-            boxPadding: 6,
-            usePointStyle: true,
-            cornerRadius: 10,
-            displayColors: true,
-            callbacks: {
-                title: (items) => items.length ? `📅 ${items[0].label}` : '',
-                label: (context) => ` ${context.dataset.label}: ${formatMoney(context.parsed.y)}`,
-                labelTextColor: () => 'rgba(248, 250, 252, 0.9)',
             },
         }
     }
